@@ -18,7 +18,7 @@ var (
 func TestLogger_NewLogger(t *testing.T) {
 	_ = os.Mkdir(path, os.ModePerm)
 
-	log := NewWith(path, "")
+	log := NewWith(path)
 	log.Info("info log with args: ", "abc")
 	log.Info("info log with object: ", []string{"a", "b", "c"})
 	log.Infof("infof log %s ", "abc")
@@ -42,7 +42,7 @@ func TestLogger_rotate(t *testing.T) {
 	wg.Add(2)
 
 	go func() {
-		logger := NewWith(path, "rotate")
+		logger := NewWith(path)
 		for i := 0; i <= 80; i++ {
 			logger.Info("test rotate logs")
 			time.Sleep(time.Second)
