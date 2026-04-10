@@ -28,3 +28,5 @@ go.work.sum
 .idea/
 log/
 logs
+
+.claude/*.local.json
