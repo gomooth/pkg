@@ -9,10 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gomooth/pkg/framework/dbquery"
-
 	"github.com/eko/gocache/lib/v4/cache"
 	"github.com/eko/gocache/lib/v4/store"
+	"github.com/gomooth/pkg/framework/dbfilter"
 
 	"github.com/redis/go-redis/v9"
 
@@ -68,7 +67,7 @@ type queryResult[E any] struct {
 	} `json:"remember,omitempty"`
 }
 
-func (s *dbCache[E, F]) Paginate(ctx context.Context, start, limit int, opt dbquery.IFilter[F],
+func (s *dbCache[E, F]) Paginate(ctx context.Context, start, limit int, opt dbfilter.IFilter[F],
 	query func() ([]*E, uint, error),
 ) ([]*E, uint, error) {
 	k := strings.ToLower(fmt.Sprintf("%x", md5.Sum([]byte(opt.String()))))
@@ -98,7 +97,7 @@ func (s *dbCache[E, F]) Paginate(ctx context.Context, start, limit int, opt dbqu
 	return result.Paginate.Data, result.Paginate.Total, nil
 }
 
-func (s *dbCache[E, F]) List(ctx context.Context, opt dbquery.IFilter[F],
+func (s *dbCache[E, F]) List(ctx context.Context, opt dbfilter.IFilter[F],
 	query func() ([]*E, error),
 ) ([]*E, error) {
 	k := strings.ToLower(fmt.Sprintf("%x", md5.Sum([]byte(opt.String()))))

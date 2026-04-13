@@ -31,17 +31,17 @@ err := dao.Delete(1)
 err := dao.Remove(1) // 硬删除
 
 // 3. 使用查询构建器
-queryBuilder := NewQueryBuilder[platform.User, platformfilter.User](dao)
+searcher := NewQueryBuilder[platform.User, platformfilter.User](dao)
 
 // 分页查询
-records, total, err := queryBuilder.Paginate(0, 10, nil)  // records 是 []*platform.User
+records, total, err := searcher.Paginate(0, 10, nil)  // records 是 []*platform.User
 
 // 带过滤条件查询
 filter := dbquery.New[platformfilter.User](&platformfilter.User{Account: "test"})
-records, err := queryBuilder.All(filter)  // records 是 []*platform.User
+records, err := searcher.All(filter)  // records 是 []*platform.User
 
 // 使用查询选项
-records, err := queryBuilder.Find(nil,
+records, err := searcher.Find(nil,
 	WithPreload("UserRoles"),
 	WithSelect("id", "account", "nickname"),
 	WithOrder("created_at DESC"),

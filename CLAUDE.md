@@ -105,13 +105,16 @@ pkg/
 ### 关键设计模式
 
 1. **选项模式（Option Pattern）**: 广泛用于配置初始化，如 `framework/logger/option.go`
-2. **仓库模式（Repository Pattern）**: `framework/dbrepo/` 提供通用DAO和查询构建器
-3. **中间件模式**: `http/middleware/` 提供可插拔的Gin中间件
-4. **工厂模式**: `framework/dbrepo/factory.go` 提供对象创建工厂
+2. **接口模式（Interface Pattern）**: 关键功能提供接口定义，如 `framework/dbrepo/dao.go` 中的 `IDAO` 接口
+3. **仓库模式（Repository Pattern）**: `framework/dbrepo/` 提供通用DAO和查询构建器
+4. **中间件模式**: `http/middleware/` 提供可插拔的Gin中间件
+5. **工厂模式**: `framework/dbrepo/factory.go` 提供对象创建工厂
 
 ### 数据库访问
 
-- **DAO层**: `framework/dbrepo/dao.go` 提供通用CRUD操作
+- **DAO接口**: `framework/dbrepo/dao.go` 定义了 `IDAO[T]` 接口，提供通用CRUD操作
+- **DAO实现**: `dao[T]` 结构体实现了 `IDAO[T]` 接口的所有方法
+- **工厂函数**: `NewDAO[T any](db *gorm.DB) IDAO[T]` 返回接口类型，便于依赖注入和测试
 - **查询构建器**: `framework/dbrepo/query_builder.go` 支持链式查询
 - **分页**: `framework/pager/` 与 `framework/dbquery/` 集成
 - **事务**: DAO支持事务操作

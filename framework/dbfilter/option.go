@@ -1,4 +1,4 @@
-package dbquery
+package dbfilter
 
 import "github.com/gomooth/pkg/framework/pager"
 
