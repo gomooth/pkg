@@ -1,15 +1,19 @@
 package dbutil
 
 import (
+	"strings"
+
 	"github.com/save95/xerror"
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 func toDialect(driver, dsn string) (gorm.Dialector, error) {
+	driver = strings.ToLower(driver)
 	switch driver {
-	case "mysql":
+	case "mysql", "tidb":
 		return mysql.New(mysql.Config{
 			DSN:                       dsn,   // DSN data source name
 			DefaultStringSize:         256,   // string 类型字段的默认长度
@@ -20,7 +24,9 @@ func toDialect(driver, dsn string) (gorm.Dialector, error) {
 		}), nil
 	case "sqlite", "sqlite3":
 		return sqlite.Open(dsn), nil
+	case "postgres":
+		return postgres.Open(dsn), nil
 	default:
-		return nil, xerror.New("dialect convert undefined, please use `dbutil.ConnectWith`")
+		return nil, xerror.New("dialect convert undefined, please use `dbutil.ConnectWithXXXDialector`")
 	}
 }

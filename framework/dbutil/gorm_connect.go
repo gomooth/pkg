@@ -59,7 +59,7 @@ func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, erro
 }
 
 // Connect 获取db
-func Connect(option *Option) (*gorm.DB, error) {
+func Connect(option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
 	if option == nil {
 		return nil, errors.New("db connect option empty")
 	}
@@ -73,6 +73,11 @@ func Connect(option *Option) (*gorm.DB, error) {
 		!strings.Contains(option.Config.Dsn, ":") ||
 		!strings.Contains(option.Config.Dsn, "@") {
 		return nil, errors.New("db config invalid")
+	}
+
+	opt := new(connectOption)
+	for _, builder := range optBuilders {
+		builder(opt)
 	}
 
 	var (
@@ -95,9 +100,13 @@ func Connect(option *Option) (*gorm.DB, error) {
 	}
 
 	// 配置转成方言
-	dialect, err := toDialect(option.Config.Driver, option.Config.Dsn)
-	if nil != err {
-		return nil, err
+	dialect := opt.gormDialect
+	if dialect == nil {
+		v, err := toDialect(option.Config.Driver, option.Config.Dsn)
+		if nil != err {
+			return nil, err
+		}
+		dialect = v
 	}
 
 	// 未找到则需要初始化
@@ -115,40 +124,7 @@ func Connect(option *Option) (*gorm.DB, error) {
 }
 
 // ConnectWith 通过方言获取db
+// Deprecated Use Connect(option, ConnectWithGORMDialector(dialect))
 func ConnectWith(dialect gorm.Dialector, option *Option) (*gorm.DB, error) {
-	if option.Name == "" {
-		return nil, errors.New("the db config name invalid")
-	}
-
-	var (
-		db  *gorm.DB
-		err error
-
-		// 用于只初始化一次
-		wg sync.WaitGroup
-	)
-	wg.Add(1)
-	fi, loaded := dbRelation.LoadOrStore(option.Name, dbFunc(func() (*gorm.DB, error) {
-		// 阻塞直到初始化完成
-		wg.Wait()
-		return db, err
-	}))
-
-	// 已经存在，则直接调用即可
-	if loaded {
-		return fi.(dbFunc)()
-	}
-
-	// 未找到则需要初始化
-	db, err = connectWithoutCache(dialect, option)
-
-	// 真实的返回db函数，wg释放后
-	f := dbFunc(func() (*gorm.DB, error) {
-		return db, err
-	})
-
-	wg.Done()
-	// 重置函数
-	dbRelation.Store(option.Name, f)
-	return db, err
+	return Connect(option, ConnectWithGORMDialector(dialect))
 }
