@@ -65,3 +65,8 @@ func WithXSSRoutePolicy(routeRule string, policy xss.Policy, skipFields ...strin
 func WithXSSRouteFieldPolicy(routeRule string, policy xss.Policy, fields ...string) mxss.Option {
 	return mxss.WithRouteFieldPolicy(routeRule, policy, fields...)
 }
+
+// WithXSSMaxBodySize 设置 XSS 过滤器的请求体最大字节数，超过则返回 400。默认 10MB
+func WithXSSMaxBodySize(n int64) mxss.Option {
+	return mxss.WithMaxBodySize(n)
+}

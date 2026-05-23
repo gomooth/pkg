@@ -2,59 +2,85 @@ package redisconsumer
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/gomooth/pkg/framework/logger"
+	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/queue"
-
-	"github.com/save95/xlog"
 )
 
+// redisFetcher 从 Redis 队列获取消息，实现 queue.Fetcher 接口
+type redisFetcher struct {
+	queue queue.IQueue
+}
+
+func (f *redisFetcher) Fetch(ctx context.Context) (string, error) {
+	return f.queue.Pop(ctx)
+}
+
+func (f *redisFetcher) Close() error {
+	return f.queue.Close()
+}
+
+// consumer Redis 消费者，嵌入 BaseConsumer 复用消费循环
 type consumer struct {
-	queueName string
-	config    *queue.RedisQueueConfig
-
-	log xlog.XLogger
-
-	fun           func(val string) error
-	failedHandler func(val string, err error)
+	*queue.BaseConsumer
 }
 
-func New(opts ...func(*consumer)) queue.IConsumer {
-	c := &consumer{
-		log: logger.NewConsoleLogger(),
-		fun: func(val string) error {
-			return nil
-		},
-	}
+// New 创建 Redis 消费者
+func New(opts ...func(*consumerOptions)) queue.IConsumer {
+	o := defaultConsumerOptions()
 	for _, opt := range opts {
-		opt(c)
+		opt(o)
 	}
-	return c
+
+	baseOpts := []queue.BaseConsumerOption{
+		queue.WithConsumerLogger(o.log),
+		queue.WithConsumerBackoff(o.backoff),
+		queue.WithConsumerEmptyQueueSleep(o.emptyQueueSleep),
+		queue.WithConsumerFailedCallbackDelay(o.failedCallbackDelay),
+	}
+
+	if o.handlerConfig != nil {
+		q := queue.NewSimpleRedis(o.handlerConfig.config, o.handlerConfig.queueName)
+		fetcher := &redisFetcher{queue: q}
+		handler := &queue.FuncHandler{
+			QueueNameFunc: func() string { return o.handlerConfig.queueName },
+			HandleFunc:    o.handlerConfig.handleFunc,
+			OnFailedFunc:  o.handlerConfig.onFailedFunc,
+		}
+		baseOpts = append(baseOpts,
+			queue.WithConsumerHandler(handler),
+			queue.WithConsumerFetcher(fetcher),
+		)
+	}
+
+	return &consumer{
+		BaseConsumer: queue.NewBaseConsumer(baseOpts...),
+	}
 }
 
-func (q *consumer) Consume(ctx context.Context) error {
-	queued := queue.NewSimpleRedis(q.config, q.queueName)
+type consumerOptions struct {
+	log                 *slog.Logger
+	backoff             retry.BackoffStrategy
+	emptyQueueSleep     time.Duration
+	failedCallbackDelay time.Duration
+	handlerConfig       *handlerConfig
+}
 
-	for {
-		str, err := queued.Pop(ctx)
-		if nil != err {
-			q.log.Warningf("get redis queue item failed: [%s]: %+v", q.queueName, err)
-			continue
-		}
+type handlerConfig struct {
+	config       *queue.RedisQueueConfig
+	queueName    string
+	handleFunc   func(ctx context.Context, data string) error
+	onFailedFunc func(ctx context.Context, data string, err error)
+}
 
-		if len(str) == 0 {
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		if err := q.fun(str); nil != err {
-			if q.failedHandler != nil {
-				q.failedHandler(str, err)
-				continue
-			}
-
-			q.log.Warningf("handle redis queue item failed: [%s]: [%s] %+v", q.queueName, str, err)
-		}
+func defaultConsumerOptions() *consumerOptions {
+	return &consumerOptions{
+		log:                 logger.NewConsoleLogger(),
+		backoff:             &retry.FixedDelay{Wait: time.Second},
+		emptyQueueSleep:     time.Second,
+		failedCallbackDelay: 3 * time.Second,
 	}
 }

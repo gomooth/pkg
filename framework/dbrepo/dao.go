@@ -3,11 +3,36 @@ package dbrepo
 import (
 	"context"
 	"errors"
+	"time"
 
-	"github.com/save95/xerror"
-	"github.com/save95/xerror/xcode"
+	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/xerror"
+	"github.com/gomooth/xerror/xcode"
+	"go.opentelemetry.io/otel/metric"
 	"gorm.io/gorm"
 )
+
+var dbRepoMeter = metrics.GetProvider().Meter("dbrepo")
+
+var (
+	dbRepoOperationCounter  = dbRepoMeter.Int64Counter("dbrepo.operation")
+	dbRepoOperationDuration = dbRepoMeter.Float64Histogram("dbrepo.operation.duration",
+		metric.WithUnit("s"))
+)
+
+func recordDBRepoMetric(ctx context.Context, component, operation string, dur time.Duration, err error) {
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	attrs := metric.WithAttributes(
+		metrics.Attr("component", component),
+		metrics.Attr("operation", operation),
+		metrics.Attr("result", result),
+	)
+	dbRepoOperationCounter.Add(ctx, 1, attrs)
+	dbRepoOperationDuration.Record(ctx, dur.Seconds(), attrs)
+}
 
 // IDAO 数据访问对象接口，提供通用的CRUD操作
 type IDAO[T any] interface {
@@ -21,32 +46,54 @@ type IDAO[T any] interface {
 	First(ctx context.Context, id uint) (*T, error)
 	// FirstWith 根据ID查询单条记录（支持预加载）
 	FirstWith(ctx context.Context, id uint, preloads ...string) (*T, error)
-	// Delete 软删除记录
-	Delete(ctx context.Context, id uint) error
-	// Remove 硬删除记录
-	Remove(ctx context.Context, id uint) error
-	// Count 统计记录数量
-	Count(ctx context.Context) (int64, error)
-	// Exists 判断记录是否存在
-	Exists(ctx context.Context, id uint) (bool, error)
-	// Update 更新记录
-	Update(ctx context.Context, id uint, updates map[string]interface{}) error
+	// Delete 软删除记录，返回影响行数
+	Delete(ctx context.Context, id uint) (int64, error)
+	// Remove 硬删除记录，返回影响行数
+	Remove(ctx context.Context, id uint) (int64, error)
+	// Update 更新指定字段（类型安全，显式声明要更新的字段名）
+	Update(ctx context.Context, id uint, record *T, fields ...string) error
+	// WithTx 返回绑定指定事务的 DAO 实例
+	WithTx(tx *gorm.DB) IDAO[T]
 }
 
 // dao 数据访问对象，提供通用的CRUD操作
 type dao[T any] struct {
-	db *gorm.DB
+	db        *gorm.DB
+	batchSize int // 批量创建时的批次大小，默认 100
 }
 
 // NewDAO 创建DAO实例
-func NewDAO[T any](db *gorm.DB) IDAO[T] {
-	return &dao[T]{db: db}
+// db 不能为 nil，否则返回错误
+// opts 可选配置，如 WithBatchSize 设置批量创建时的批次大小
+func NewDAO[T any](db *gorm.DB, opts ...func(*dao[T])) (IDAO[T], error) {
+	if db == nil {
+		return nil, xerror.New("dbrepo: NewDAO called with nil *gorm.DB")
+	}
+	d := &dao[T]{db: db, batchSize: 100}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d, nil
+}
+
+// WithBatchSize 设置批量创建时的批次大小
+func WithBatchSize[T any](size int) func(*dao[T]) {
+	return func(d *dao[T]) {
+		if size > 0 {
+			d.batchSize = size
+		}
+	}
 }
 
 // Create 创建记录
-func (d *dao[T]) Create(ctx context.Context, record *T) error {
+func (d *dao[T]) Create(ctx context.Context, record *T) (err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "create", time.Since(start), err)
+	}()
+
 	if record == nil {
-		return xerror.WithXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError)
 	}
 	if err := d.db.WithContext(ctx).Create(record).Error; err != nil {
 		return xerror.WrapWithXCode(err, xcode.DBFailed)
@@ -55,28 +102,38 @@ func (d *dao[T]) Create(ctx context.Context, record *T) error {
 }
 
 // Creates 批量创建记录
-func (d *dao[T]) Creates(ctx context.Context, records []*T) error {
+func (d *dao[T]) Creates(ctx context.Context, records []*T) (err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "creates", time.Since(start), err)
+	}()
+
 	if len(records) == 0 {
-		return xerror.WithXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError)
 	}
 
 	// 检查是否有nil记录
 	for i, record := range records {
 		if record == nil {
-			return xerror.WithXCodeMessagef(xcode.DBRequestParamError, "record at index %d is nil", i)
+			return xerror.NewXCodef(xcode.DBRequestParamError, "record at index %d is nil", i)
 		}
 	}
 
-	if err := d.db.WithContext(ctx).CreateInBatches(records, 100).Error; err != nil {
+	if err := d.db.WithContext(ctx).CreateInBatches(records, d.batchSize).Error; err != nil {
 		return xerror.WrapWithXCode(err, xcode.DBFailed)
 	}
 	return nil
 }
 
 // Save 保存记录（更新或创建）
-func (d *dao[T]) Save(ctx context.Context, record *T) error {
+func (d *dao[T]) Save(ctx context.Context, record *T) (err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "save", time.Since(start), err)
+	}()
+
 	if record == nil {
-		return xerror.WithXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError)
 	}
 	if err := d.db.WithContext(ctx).Save(record).Error; err != nil {
 		return xerror.WrapWithXCode(err, xcode.DBFailed)
@@ -85,25 +142,35 @@ func (d *dao[T]) Save(ctx context.Context, record *T) error {
 }
 
 // First 根据ID查询单条记录
-func (d *dao[T]) First(ctx context.Context, id uint) (*T, error) {
+func (d *dao[T]) First(ctx context.Context, id uint) (record *T, err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "first", time.Since(start), err)
+	}()
+
 	if id == 0 {
-		return nil, xerror.WithXCode(xcode.DBRequestParamError)
+		return nil, xerror.NewXCode(xcode.DBRequestParamError)
 	}
 
-	var record T
-	if err := d.db.WithContext(ctx).Where("id = ?", id).First(&record).Error; err != nil {
+	var r T
+	if err := d.db.WithContext(ctx).Where("id = ?", id).First(&r).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, xerror.WithXCode(xcode.DBRecordNotFound)
+			return nil, xerror.NewXCode(xcode.DBRecordNotFound)
 		}
 		return nil, xerror.WrapWithXCode(err, xcode.DBFailed)
 	}
-	return &record, nil
+	return &r, nil
 }
 
 // FirstWith 根据ID查询单条记录
-func (d *dao[T]) FirstWith(ctx context.Context, id uint, preloads ...string) (*T, error) {
+func (d *dao[T]) FirstWith(ctx context.Context, id uint, preloads ...string) (record *T, err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "first_with", time.Since(start), err)
+	}()
+
 	if id == 0 {
-		return nil, xerror.WithXCode(xcode.DBRequestParamError)
+		return nil, xerror.NewXCode(xcode.DBRequestParamError)
 	}
 
 	db := d.db.WithContext(ctx).Where("id = ?", id)
@@ -111,65 +178,84 @@ func (d *dao[T]) FirstWith(ctx context.Context, id uint, preloads ...string) (*T
 		db = db.Preload(preload)
 	}
 
-	var record T
-	if err := db.First(&record).Error; err != nil {
+	var r T
+	if err := db.First(&r).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, xerror.WithXCode(xcode.DBRecordNotFound)
+			return nil, xerror.NewXCode(xcode.DBRecordNotFound)
 		}
 		return nil, xerror.WrapWithXCode(err, xcode.DBFailed)
 	}
 
-	return &record, nil
+	return &r, nil
 }
 
-// Delete 软删除记录
-func (d *dao[T]) Delete(ctx context.Context, id uint) error {
+// Delete 软删除记录，返回影响行数
+func (d *dao[T]) Delete(ctx context.Context, id uint) (rowsAffected int64, err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "delete", time.Since(start), err)
+	}()
+
 	if id == 0 {
-		return xerror.WithXCode(xcode.DBRequestParamError)
+		return 0, xerror.NewXCode(xcode.DBRequestParamError)
 	}
 
 	model := new(T)
-	if err := d.db.WithContext(ctx).Where("id = ?", id).Delete(model).Error; err != nil {
-		return xerror.WrapWithXCode(err, xcode.DBFailed)
+	result := d.db.WithContext(ctx).Where("id = ?", id).Delete(model)
+	if result.Error != nil {
+		return 0, xerror.WrapWithXCode(result.Error, xcode.DBFailed)
 	}
-	return nil
+	return result.RowsAffected, nil
 }
 
-// Remove 硬删除记录
-func (d *dao[T]) Remove(ctx context.Context, id uint) error {
+// Remove 硬删除记录，返回影响行数
+func (d *dao[T]) Remove(ctx context.Context, id uint) (rowsAffected int64, err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "remove", time.Since(start), err)
+	}()
+
 	if id == 0 {
-		return xerror.WithXCode(xcode.DBRequestParamError)
+		return 0, xerror.NewXCode(xcode.DBRequestParamError)
 	}
 
 	model := new(T)
-	if err := d.db.Unscoped().Where("id = ?", id).Delete(model).Error; err != nil {
+	result := d.db.Unscoped().WithContext(ctx).Where("id = ?", id).Delete(model)
+	if result.Error != nil {
+		return 0, xerror.WrapWithXCode(result.Error, xcode.DBFailed)
+	}
+	return result.RowsAffected, nil
+}
+
+// Update 更新指定字段（类型安全，显式声明要更新的字段名）
+// fields 为 GORM 列名，如 "name", "age"。使用 Select 显式指定字段，
+// 可更新零值字段（如将 age 设为 0），避免 map[string]any 的类型不安全问题。
+func (d *dao[T]) Update(ctx context.Context, id uint, record *T, fields ...string) (err error) {
+	start := time.Now()
+	defer func() {
+		recordDBRepoMetric(ctx, "dao", "update", time.Since(start), err)
+	}()
+
+	if id == 0 {
+		return xerror.NewXCode(xcode.DBRequestParamError)
+	}
+	if record == nil {
+		return xerror.NewXCode(xcode.DBRequestParamError)
+	}
+	if len(fields) == 0 {
+		return xerror.NewXCode(xcode.DBRequestParamError)
+	}
+	if err := d.db.WithContext(ctx).Model(new(T)).Where("id = ?", id).Select(fields).Updates(record).Error; err != nil {
 		return xerror.WrapWithXCode(err, xcode.DBFailed)
 	}
 	return nil
 }
 
-// Count 统计记录数量
-func (d *dao[T]) Count(ctx context.Context) (int64, error) {
-	var count int64
-	if err := d.db.WithContext(ctx).Model(new(T)).Count(&count).Error; err != nil {
-		return 0, xerror.WrapWithXCode(err, xcode.DBFailed)
+// WithTx 返回绑定指定事务的 DAO 实例
+// 若 tx 为 nil 则返回当前 DAO 实例（使用原始 DB 连接），避免后续操作 panic
+func (d *dao[T]) WithTx(tx *gorm.DB) IDAO[T] {
+	if tx == nil {
+		return d
 	}
-	return count, nil
-}
-
-// Exists 判断记录是否存在
-func (d *dao[T]) Exists(ctx context.Context, id uint) (bool, error) {
-	var count int64
-	if err := d.db.WithContext(ctx).Model(new(T)).Where("id = ?", id).Count(&count).Error; err != nil {
-		return false, xerror.WrapWithXCode(err, xcode.DBFailed)
-	}
-	return count > 0, nil
-}
-
-// Update 更新记录
-func (d *dao[T]) Update(ctx context.Context, id uint, updates map[string]interface{}) error {
-	if err := d.db.WithContext(ctx).Model(new(T)).Where("id = ?", id).Updates(updates).Error; err != nil {
-		return xerror.WrapWithXCode(err, xcode.DBFailed)
-	}
-	return nil
+	return &dao[T]{db: tx, batchSize: d.batchSize}
 }

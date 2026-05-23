@@ -1,6 +1,17 @@
 package httpcontext
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
+
+func WithParent(parent context.Context) func(*httpContext) {
+	return func(c *httpContext) {
+		if parent != nil {
+			c.parent = parent
+		}
+	}
+}
 
 func WithUser(user *User) func(*httpContext) {
 	return func(c *httpContext) {
@@ -20,11 +31,8 @@ func WithRawRequestBody(body []byte) func(*httpContext) {
 	}
 }
 
-func WithData(key string, value interface{}) func(*httpContext) {
+func WithData(key string, value any) func(*httpContext) {
 	return func(c *httpContext) {
-		if c.storage == nil {
-			c.storage = make(map[string]interface{})
-		}
-		c.storage[key] = value
+		c.parent = context.WithValue(c.parent, ctxKey(key), value)
 	}
 }

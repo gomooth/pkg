@@ -1,5 +1,7 @@
 package httpcontext
 
+import "slices"
+
 // User 用户基本信息
 type User struct {
 	ID      uint
@@ -12,40 +14,49 @@ type User struct {
 }
 
 func (u *User) GetID() uint {
-	if nil == u {
+	if u == nil {
 		return 0
 	}
 	return u.ID
 }
 
 func (u *User) GetAccount() string {
-	if nil == u {
+	if u == nil {
 		return ""
 	}
 	return u.Account
 }
 
 func (u *User) GetName() string {
-	if nil == u {
+	if u == nil {
 		return ""
 	}
 	return u.Name
 }
 
 func (u *User) GetRoles() []IRole {
-	if nil == u {
+	if u == nil {
 		return make([]IRole, 0)
+	}
+	return slices.Clone(u.Roles)
+}
+
+// RolesRef 返回内部 Roles slice 的引用，供框架内部高性能只读场景使用。
+// 调用方不可修改返回的 slice，否则会导致未定义行为。
+func (u *User) RolesRef() []IRole {
+	if u == nil {
+		return nil
 	}
 	return u.Roles
 }
 
 func (u *User) Is(role IRole) bool {
-	if u == nil || u.Roles == nil || len(u.Roles) == 0 {
+	if u == nil {
 		return false
 	}
-
-	for _, item := range u.Roles {
-		if role == item {
+	roles := u.RolesRef()
+	for i := range roles {
+		if roles[i] == role {
 			return true
 		}
 	}
@@ -53,20 +64,46 @@ func (u *User) Is(role IRole) bool {
 }
 
 func (u *User) GetIP() string {
-	if nil == u {
+	if u == nil {
 		return ""
 	}
 	return u.IP
 }
 
-func (u *User) getExtend() map[string]string {
+func (u *User) GetExtend() map[string]string {
 	if u == nil || u.Extend == nil {
 		return make(map[string]string)
 	}
-	return u.Extend
+	cp := make(map[string]string, len(u.Extend))
+	for k, v := range u.Extend {
+		cp[k] = v
+	}
+	return cp
 }
 
 func (u *User) GetExtendValue(field string) string {
-	extend := u.getExtend()
+	extend := u.GetExtend()
 	return extend[field]
+}
+
+// Clone 返回 User 的深拷贝，Roles 和 Extend 均为独立副本
+func (u *User) Clone() User {
+	roles := slices.Clone(u.Roles)
+
+	var extend map[string]string
+	if u.Extend != nil {
+		extend = make(map[string]string, len(u.Extend))
+		for k, v := range u.Extend {
+			extend[k] = v
+		}
+	}
+
+	return User{
+		ID:      u.ID,
+		Account: u.Account,
+		Name:    u.Name,
+		Roles:   roles,
+		IP:      u.IP,
+		Extend:  extend,
+	}
 }

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -20,23 +20,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/save95/xerror"
-	"github.com/save95/xerror/xcode"
-	"github.com/save95/xlog"
+	"github.com/gomooth/xerror"
+	"github.com/gomooth/xerror/xcode"
 
 	"golang.org/x/text/language"
 )
 
 type response struct {
 	ctx    *gin.Context
-	logger xlog.XLog
+	logger *slog.Logger
 
 	languageHeaderKey  string
 	supportedLanguages []language.Tag
 	msgHandler         func(code int, lang language.Tag) string
 	defaultedLanguage  language.Tag
 
-	showErrorCodes []int
+	// visibleErrorCodes 允许向客户端展示的错误码白名单
+	// 空=全部可见，非空=仅白名单内的错误码可见
+	visibleErrorCodes []int
+
+	debugError    bool // 调试模式：非 xerror 错误显示原始信息
+	strictHeaders bool // 严格头部模式：仅允许 X- 前缀的自定义头，默认 true
 }
 
 // NewResponse 创建 Restful 标准响应生成器
@@ -53,8 +57,9 @@ type response struct {
 //	)
 func NewResponse(ctx *gin.Context, opts ...func(*response)) IResponse {
 	resp := &response{
-		ctx:            ctx,
-		showErrorCodes: make([]int, 0),
+		ctx:               ctx,
+		visibleErrorCodes: make([]int, 0),
+		strictHeaders:     true,
 	}
 
 	for _, opt := range opts {
@@ -68,10 +73,18 @@ func NewResponse(ctx *gin.Context, opts ...func(*response)) IResponse {
 	return resp
 }
 
+// allowedStandardHeaders 严格模式下允许设置的标准 HTTP 头白名单
+var allowedStandardHeaders = map[string]bool{
+	"Content-Type":        true,
+	"Content-Disposition": true,
+	"Location":            true,
+	"Cache-Control":       true,
+}
+
 // SetHeader 设置请求头
 func (r *response) SetHeader(key, value string) IResponse {
-	// 必须使用自定义头 X- 开始才设置，否则跳过
-	if !strings.HasPrefix(key, "X-") && !strings.HasPrefix(key, "x-") {
+	// 严格模式下，仅允许 X- 前缀自定义头和白名单内的标准头
+	if r.strictHeaders && !strings.HasPrefix(key, "X-") && !strings.HasPrefix(key, "x-") && !allowedStandardHeaders[key] {
 		return r
 	}
 
@@ -80,7 +93,7 @@ func (r *response) SetHeader(key, value string) IResponse {
 }
 
 // Retrieve 查询单个资源的响应
-func (r *response) Retrieve(entity interface{}) {
+func (r *response) Retrieve(entity any) {
 	//r.ctx.Header("Content-MD5", fmt.Sprintf("%x", md5.Sum([]byte())))
 	if entity == nil {
 		r.ctx.AbortWithStatus(http.StatusNotFound)
@@ -95,18 +108,18 @@ func (r *response) TableWithPagination(resp *TableResponse) {
 	// 写响应页码
 	r.writeResponsePagination(resp.TotalRow)
 
-	rows := make(map[string]map[string]interface{}, 0)
+	rows := make(map[string]map[string]any)
 	for _, item := range resp.Items {
 		row, ok := rows[item.RowKey]
 		if !ok {
-			row = make(map[string]interface{}, 0)
+			row = make(map[string]any)
 		}
 
 		row[item.Column] = item.Data
 		rows[item.RowKey] = row
 	}
 
-	extends := make(map[string]interface{}, 0)
+	extends := make(map[string]any)
 	for _, item := range resp.Extends {
 		if _, ok := extends[item.RowKey]; !ok {
 			extends[item.RowKey] = item.Data
@@ -115,7 +128,7 @@ func (r *response) TableWithPagination(resp *TableResponse) {
 
 	//r.ctx.Header("Content-MD5", "")
 
-	r.ctx.AbortWithStatusJSON(http.StatusOK, map[string]interface{}{
+	r.ctx.AbortWithStatusJSON(http.StatusOK, map[string]any{
 		"columns": resp.Columns,
 		"rowKeys": resp.RowKeys,
 		"data":    rows,
@@ -131,18 +144,29 @@ func (r *response) writeResponsePagination(totalRow uint) {
 	// 解析URL，Query string
 	currentUri := r.ctx.Request.RequestURI
 	urls, err := url.Parse(currentUri)
-	if nil != err {
+	if err != nil {
 		r.WithError(xerror.Wrap(err, "parse uri failed"))
 		return
 	}
 
 	qs := urls.Query()
 	start := valutil.Int(qs.Get("start"))
+	if start < 0 {
+		start = 0
+	}
 	limit := valutil.IntWith(qs.Get("limit"), pager.DefaultPageSize)
+	if limit <= 0 {
+		limit = pager.DefaultPageSize
+	}
 
-	// 计算分页信息
-	page := uint(math.Ceil(float64(start/limit)) + 1)
-	count := uint(math.Max(1, float64(totalRow/uint(limit))))
+	// 计算分页信息（纯整数运算，limit 已保证 > 0）
+	page := uint(start/limit) + 1
+	var count uint
+	if totalRow == 0 {
+		count = 0
+	} else {
+		count = (totalRow + uint(limit) - 1) / uint(limit)
+	}
 
 	// 设置分页信息
 	r.ctx.Header(PageInfoHeaderKey, fmt.Sprintf(
@@ -156,13 +180,24 @@ func (r *response) writeResponsePagination(totalRow uint) {
 	// 计算分页url
 	firstUri := r.ComputePaginateUri(urls, 0)
 
-	prevStart := int(math.Max(0, float64(start-limit)))
+	var prevStart int
+	if start >= limit {
+		prevStart = start - limit
+	}
 	prevUri := r.ComputePaginateUri(urls, prevStart)
 
-	nextStart := int(math.Min(float64((count-1)*uint(limit)), float64(page*uint(limit))))
+	var nextStart int
+	if count > 0 && page < count {
+		nextStart = int(page * uint(limit))
+	} else if count > 0 {
+		nextStart = int((count - 1) * uint(limit))
+	}
 	nextUri := r.ComputePaginateUri(urls, nextStart)
 
-	lastStart := int(math.Max(0, float64((count-1)*uint(limit))))
+	var lastStart int
+	if count > 0 {
+		lastStart = int((count - 1) * uint(limit))
+	}
 	lastUri := r.ComputePaginateUri(urls, lastStart)
 
 	links := fmt.Sprintf(
@@ -177,20 +212,9 @@ func (r *response) writeResponsePagination(totalRow uint) {
 }
 
 // ListWithPagination 分页列表的响应
-func (r *response) ListWithPagination(totalRow uint, entities interface{}) {
-	tk := reflect.TypeOf(entities).Kind()
-	if tk != reflect.Slice && tk != reflect.Array {
-		r.WithError(xerror.New("response data type error"))
-		return
-	}
-
-	// 写响应页码
+func (r *response) ListWithPagination(totalRow uint, entities any) {
 	r.writeResponsePagination(totalRow)
-
-	if reflect.ValueOf(entities).IsNil() {
-		entities = make([]interface{}, 0)
-	}
-	r.ctx.AbortWithStatusJSON(http.StatusOK, entities)
+	r.ctx.AbortWithStatusJSON(http.StatusOK, nilSafeSlice(entities))
 }
 
 func (r *response) ComputePaginateUri(urls *url.URL, start int) string {
@@ -208,24 +232,22 @@ func (r *response) ComputePaginateUri(urls *url.URL, start int) string {
 }
 
 // ListWithMoreFlag 查询列表的响应
-func (r *response) ListWithMoreFlag(hasMore bool, entities interface{}) {
-	tk := reflect.TypeOf(entities).Kind()
-	if tk != reflect.Slice && tk != reflect.Array {
-		r.WithError(xerror.New("response data type error"))
-		return
-	}
-
+func (r *response) ListWithMoreFlag(hasMore bool, entities any) {
 	r.ctx.Header(HasMoreHeaderKey, strconv.FormatBool(hasMore))
+	r.ctx.AbortWithStatusJSON(http.StatusOK, nilSafeSlice(entities))
+}
 
-	if reflect.ValueOf(entities).IsNil() {
-		entities = make([]interface{}, 0)
+// ListWithCursor 游标分页列表的响应，通过 X-Next-Cursor header 返回下一页游标
+func (r *response) ListWithCursor(nextCursor string, entities any) {
+	if len(nextCursor) > 0 {
+		r.ctx.Header(NextCursorHeaderKey, nextCursor)
 	}
-	r.ctx.AbortWithStatusJSON(http.StatusOK, entities)
+	r.ctx.AbortWithStatusJSON(http.StatusOK, nilSafeSlice(entities))
 }
 
 // Post 新增请求的响应
-func (r *response) Post(entity interface{}) {
-	if nil == entity {
+func (r *response) Post(entity any) {
+	if entity == nil {
 		r.WithError(xerror.New("post must has response entity"))
 		return
 	}
@@ -234,29 +256,29 @@ func (r *response) Post(entity interface{}) {
 }
 
 // Put 全量更新资源的响应
-func (r *response) Put(entity interface{}) {
-	if nil == entity {
+func (r *response) Put(entity any) {
+	if entity == nil {
 		r.WithError(xerror.New("put must has response entity"))
 		return
 	}
 
-	r.ctx.AbortWithStatusJSON(http.StatusCreated, entity)
+	r.ctx.AbortWithStatusJSON(http.StatusOK, entity)
 }
 
 // Patch 部分更新资源的响应
 // 部分 cdn 服务商不支持 http patch 方法，如 阿里云
-func (r *response) Patch(entity interface{}) {
-	if nil == entity {
+func (r *response) Patch(entity any) {
+	if entity == nil {
 		r.ctx.AbortWithStatus(http.StatusNoContent)
 		return
 	}
 
-	r.ctx.AbortWithStatusJSON(http.StatusCreated, entity)
+	r.ctx.AbortWithStatusJSON(http.StatusOK, entity)
 }
 
 // Delete 删除的响应
 func (r *response) Delete(err error) {
-	if nil != err {
+	if err != nil {
 		r.WithError(err)
 		return
 	}
@@ -282,18 +304,15 @@ func (r *response) WithBody(body string) {
 
 // WithError 响应错误消息(HttpStatus!=200)
 func (r *response) WithError(err error) {
-	if nil == err {
+	if err == nil {
 		r.ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"message": "error not defined",
 		})
 		return
 	}
 
-	rq := r.ctx.Request
-	if stx, se := httpcontext.MustParse(r.ctx); nil == se {
-		bs := stx.Value(httpcontext.RequestRawBodyDataKey).([]byte)
-		rq.Body = io.NopCloser(bytes.NewBuffer(bs))
-	}
+	// 重建 Request.Body，使后续日志中间件能读取请求体（默认 Body 只能读一次）
+	rebuildRequestBody(r.ctx)
 
 	// 设置错误
 	_ = r.ctx.Error(err)
@@ -309,17 +328,40 @@ func (r *response) WithError(err error) {
 		return
 	}
 
-	r.ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-		"message": err.Error(),
-	})
+	if r.debugError {
+		r.ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"message": err.Error(),
+		})
+	} else {
+		r.ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"message": http.StatusText(http.StatusInternalServerError),
+		})
+	}
 }
 
-func (r *response) inShowErrorCodes(code int) bool {
-	if len(r.showErrorCodes) == 0 {
+// rebuildRequestBody 重建 Request.Body，使后续日志中间件能读取请求体
+// 仅当 httpcontext 中存在缓存的原始 body 数据时才重建，避免不必要的操作
+func rebuildRequestBody(c *gin.Context) {
+	stx, se := httpcontext.MustParse(c)
+	if se != nil {
+		return
+	}
+	val := stx.Value(httpcontext.RequestRawBodyDataKey)
+	bs, ok := val.([]byte)
+	if !ok || len(bs) == 0 {
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bs))
+}
+
+// isErrorCodeVisible 判断错误码是否允许向客户端展示
+// 空 visibleErrorCodes = 全部可见，非空 = 仅白名单内可见
+func (r *response) isErrorCodeVisible(code int) bool {
+	if len(r.visibleErrorCodes) == 0 {
 		return true
 	}
 
-	for _, c := range r.showErrorCodes {
+	for _, c := range r.visibleErrorCodes {
 		if code == c {
 			return true
 		}
@@ -334,11 +376,11 @@ func (r *response) getErrorMsg(err xerror.XError) string {
 
 	// 如果该错误码不需要向用户展示，则展示默认
 	// 否则，展示错误码的内容
-	if !r.inShowErrorCodes(err.ErrorCode()) {
+	if !r.isErrorCodeVisible(err.ErrorCode()) {
 		return msg
 	}
 
-	msg = err.String()
+	msg = err.Message()
 	// 未定义语言key，或未定义消息处理器，则返回原始消息
 	if r.msgHandler == nil {
 		return msg
@@ -385,9 +427,9 @@ func (r *response) detectLanguage() language.Tag {
 }
 
 // WithErrorData 响应错误消息(HttpStatus!=200)，并在 header 中返回错误数据
-func (r *response) WithErrorData(err error, data interface{}) {
+func (r *response) WithErrorData(err error, data any) {
 	bs, err1 := json.Marshal(data)
-	if nil != err1 {
+	if err1 != nil {
 		r.ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"message": "error data marshal failed: " + err1.Error(),
 		})
@@ -397,4 +439,16 @@ func (r *response) WithErrorData(err error, data interface{}) {
 	r.ctx.Header(ErrorDataHeaderKey, string(bs))
 
 	r.WithError(err)
+}
+
+// nilSafeSlice 确保 nil slice 序列化为 [] 而非 null
+func nilSafeSlice(v any) any {
+	if v == nil {
+		return []any{}
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Slice && rv.IsNil() {
+		return []any{}
+	}
+	return v
 }

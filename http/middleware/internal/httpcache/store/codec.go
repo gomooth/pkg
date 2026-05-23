@@ -9,7 +9,7 @@ func init() {
 	gob.Register(&CachedResponse{})
 }
 
-func serialize(value interface{}) ([]byte, error) {
+func serialize(value any) ([]byte, error) {
 	var b bytes.Buffer
 	encoder := gob.NewEncoder(&b)
 	if err := encoder.Encode(value); err != nil {
@@ -18,6 +18,6 @@ func serialize(value interface{}) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func unserialize(payload []byte, ptr interface{}) (err error) {
+func unserialize(payload []byte, ptr any) (err error) {
 	return gob.NewDecoder(bytes.NewBuffer(payload)).Decode(ptr)
 }

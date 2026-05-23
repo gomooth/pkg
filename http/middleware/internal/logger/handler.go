@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/save95/xerror"
+	"github.com/gomooth/xerror"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,14 +21,36 @@ type handler struct {
 	ctx        *gin.Context
 	respWriter *responseWriter
 
-	retractive string
+	retractive      string
+	redactEnabled   bool
+	sensitiveFields []string
+	sensitiveKeys   map[string]bool // 预计算的查找集合
 }
 
-func New(ctx *gin.Context) ILogger {
+// defaultSensitiveFields 默认敏感字段名
+var defaultSensitiveFields = []string{
+	"password", "newPassword", "oldPassword", "confirmedPassword",
+	"pwd", "newPwd", "oldPwd", "confirmedPwd",
+	"secret", "token", "accessToken", "refreshToken",
+	"apiKey", "privateKey", "credential",
+}
+
+func New(ctx *gin.Context, redactEnabled bool, sensitiveFields []string) ILogger {
+	if redactEnabled && len(sensitiveFields) == 0 {
+		sensitiveFields = defaultSensitiveFields
+	}
+	sensitiveKeys := make(map[string]bool, len(sensitiveFields))
+	for _, f := range sensitiveFields {
+		sensitiveKeys[strings.ToLower(f)] = true
+	}
+
 	hl := &handler{
-		ctx:        ctx,
-		respWriter: newResponseWriter(ctx.Writer),
-		retractive: "   ",
+		ctx:             ctx,
+		respWriter:      newResponseWriter(ctx.Writer),
+		retractive:      "   ",
+		redactEnabled:   redactEnabled,
+		sensitiveFields: sensitiveFields,
+		sensitiveKeys:   sensitiveKeys,
 	}
 
 	ctx.Writer = hl.respWriter
@@ -50,7 +73,12 @@ func (f handler) general() string {
 	bf.WriteString("\n[")
 	bf.WriteString(f.ctx.Request.Method)
 	bf.WriteString("] ")
-	bf.WriteString(f.ctx.Request.RequestURI)
+
+	uri := f.ctx.Request.RequestURI
+	if uri == "" {
+		uri = f.ctx.Request.URL.Path
+	}
+	bf.WriteString(uri)
 
 	return bf.String()
 }
@@ -64,6 +92,14 @@ func (f handler) request() string {
 	return bs.String()
 }
 
+// sensitiveHeaders 需要脱敏的 header 字段名（小写）
+var sensitiveHeaders = map[string]bool{
+	"authorization":    true,
+	"cookie":           true,
+	"set-cookie":       true,
+	"www-authenticate": true,
+}
+
 func (f handler) printHeader(headers http.Header) string {
 	var bf bytes.Buffer
 	bf.WriteString("\n [HEADER] ")
@@ -73,10 +109,22 @@ func (f handler) printHeader(headers http.Header) string {
 		bf.WriteString(f.retractive)
 		bf.WriteString(key)
 		bf.WriteString(": ")
-		bf.WriteString(strings.Join(val, ", "))
+		valStr := strings.Join(val, ", ")
+		if f.redactEnabled && sensitiveHeaders[strings.ToLower(key)] {
+			valStr = f.redactValue(valStr)
+		}
+		bf.WriteString(valStr)
 	}
 
 	return bf.String()
+}
+
+// redactValue 对敏感值脱敏：保留前4个字符，其余替换为 ***
+func (f handler) redactValue(val string) string {
+	if len(val) <= 4 {
+		return "****"
+	}
+	return val[:4] + "****"
 }
 
 func (f handler) printRequestPayload() string {
@@ -84,7 +132,7 @@ func (f handler) printRequestPayload() string {
 
 	// 读取 request body 失败，则在日志中显示
 	bs, err := io.ReadAll(f.ctx.Request.Body)
-	if nil != err {
+	if err != nil {
 		bf.WriteString("\n [PAYLOAD] ")
 		bf.WriteByte('\n')
 		bf.WriteString(f.retractive)
@@ -126,10 +174,77 @@ func (f handler) printRequestPayload() string {
 		}
 	} else {
 		bf.WriteString(f.retractive)
-		bf.Write(bs)
+		bf.Write(f.redactBody(bs, ct))
 	}
 
 	return bf.String()
+}
+
+// redactBody 对请求体中的敏感字段脱敏，支持 JSON 和 form-data
+func (f handler) redactBody(body []byte, contentType string) []byte {
+	if !f.redactEnabled || len(f.sensitiveKeys) == 0 {
+		return body
+	}
+
+	if strings.Contains(contentType, "application/json") {
+		return f.redactJSON(body)
+	}
+	if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+		return f.redactFormData(body)
+	}
+	return body
+}
+
+// redactJSON 对 JSON body 中的敏感字段值替换为 "***"
+func (f handler) redactJSON(body []byte) []byte {
+	var data any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return body // 非 JSON 格式，原样返回
+	}
+	f.redactJSONValue(data)
+	redacted, err := json.Marshal(data)
+	if err != nil {
+		return body
+	}
+	return redacted
+}
+
+// redactJSONValue 递归遍历 JSON 数据，对敏感字段的值替换为 "***"
+func (f handler) redactJSONValue(v any) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	for key, val := range m {
+		if f.sensitiveKeys[strings.ToLower(key)] {
+			m[key] = "***"
+			continue
+		}
+		switch child := val.(type) {
+		case map[string]any:
+			f.redactJSONValue(child)
+		case []any:
+			for _, item := range child {
+				if subMap, ok := item.(map[string]any); ok {
+					f.redactJSONValue(subMap)
+				}
+			}
+		}
+	}
+}
+
+// redactFormData 对 form-data 中的敏感字段值替换为 "***"
+func (f handler) redactFormData(body []byte) []byte {
+	parsed, err := url.ParseQuery(string(body))
+	if err != nil {
+		return body
+	}
+	for key := range parsed {
+		if f.sensitiveKeys[strings.ToLower(key)] {
+			parsed.Set(key, "***")
+		}
+	}
+	return []byte(parsed.Encode())
 }
 
 func (f handler) response() string {
@@ -147,7 +262,8 @@ func (f handler) response() string {
 	if len(body.String()) == 0 {
 		bs.WriteString("<nil>")
 	} else {
-		bs.Write(body.Bytes())
+		ct := f.respWriter.Header().Get("Content-Type")
+		bs.Write(f.redactBody(body.Bytes(), ct))
 	}
 
 	return bs.String()
@@ -168,7 +284,7 @@ func (f handler) error() string {
 }
 
 func (f handler) printError(err error) string {
-	if nil == err {
+	if err == nil {
 		return ""
 	}
 
@@ -178,7 +294,7 @@ func (f handler) printError(err error) string {
 	bs.WriteString(err.Error())
 
 	// 如果是 xerror，展示 xfield 内容
-	if xf, ok := err.(xerror.XFields); ok {
+	if xf, ok := err.(xerror.FieldCarrier); ok {
 		fields := xf.GetFields()
 		if fields != nil && len(fields) > 0 {
 			bs.WriteByte('\n')

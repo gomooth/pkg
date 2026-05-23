@@ -31,6 +31,13 @@ func WithDebug(enabled bool) func(h *handler) {
 	}
 }
 
+// WithMaxBodySize 设置请求体最大字节数，超过则拒绝处理。默认 10MB
+func WithMaxBodySize(n int64) Option {
+	return func(h *handler) {
+		h.maxBodySize = n
+	}
+}
+
 // WithTrimSpaceEnabled 是否启用空格过滤。默认不启用
 func WithTrimSpaceEnabled(enabled bool) Option {
 	return func(h *handler) {

@@ -8,42 +8,53 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ctxKey 是 httpContext 内部使用的 context key 类型，
+// 避免与标准库或其他包的 string key 冲突。
+type ctxKey string
+
 type IHttpContext interface {
 	context.Context
 
 	// TraceID 链路追踪标志
 	TraceID() string
-	// User 用户信息
+	// User 用户信息（返回防御性拷贝，修改返回值不影响内部状态）
 	User() *User
 	// IsRole 判断用户角色
 	IsRole(role IRole) bool
-	// Set 设置参数
-	// 会根据 value 的类型，自动设置对应属性的值，目前支持： User
-	Set(key string, value interface{}) IHttpContext
+	// SetUser 设置用户信息（仅在请求处理链中顺序调用，不可并发调用）
+	SetUser(user User) IHttpContext
+	// Set 设置参数，通过 context.WithValue 存入 parent 链（仅在请求处理链中顺序调用，不可并发调用）
+	Set(key string, value any) IHttpContext
 	// StorageTo 将已变更的数据，存储到 gin 上下文中，继续传输
 	StorageTo(ctx *gin.Context) bool
 }
 
 type httpContext struct {
+	parent  context.Context
 	traceID string
-	//version      ApiVersion   // 版本号
-	//bodyProperty BodyProperty // 响应正文属性
-	user *User // 用户信息
-
-	storage map[string]interface{} // 存储变量
+	user    *User
 }
 
-func NewContext(opts ...func(*httpContext)) IHttpContext {
+func NewContext(opts ...func(*httpContext)) (IHttpContext, error) {
+	traceID, err := makeTraceID()
+	if err != nil {
+		return nil, err
+	}
+	spanID, err := makeSpanID()
+	if err != nil {
+		return nil, err
+	}
+
 	c := &httpContext{
-		// 格式：版本-跟踪ID-父SpanID-标志
-		traceID: fmt.Sprintf("00-%s-%s-01", makeTraceID(), makeSpanID()),
+		parent:  context.Background(),
+		traceID: fmt.Sprintf("00-%s-%s-01", traceID, spanID),
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
 
-	return c
+	return c, nil
 }
 
 func (c *httpContext) TraceID() string {
@@ -51,7 +62,11 @@ func (c *httpContext) TraceID() string {
 }
 
 func (c *httpContext) User() *User {
-	return c.user
+	if c.user == nil {
+		return nil
+	}
+	clone := c.user.Clone()
+	return &clone
 }
 
 // IsRole 判断用户角色
@@ -59,68 +74,45 @@ func (c *httpContext) IsRole(role IRole) bool {
 	if c.user == nil {
 		return false
 	}
-
-	for i := range c.user.Roles {
-		if c.user.Roles[i] == role {
-			return true
-		}
-	}
-
-	return false
+	return c.user.Is(role)
 }
 
 func (c *httpContext) Deadline() (deadline time.Time, ok bool) {
-	return
+	return c.parent.Deadline()
 }
 
 func (c *httpContext) Done() <-chan struct{} {
-	return nil
+	return c.parent.Done()
 }
 
 func (c *httpContext) Err() error {
-	return nil
+	return c.parent.Err()
 }
 
-func (c *httpContext) Value(key interface{}) interface{} {
-	if keyAsString, ok := key.(string); ok {
-		val, _ := c.storage[keyAsString]
-		return val
+func (c *httpContext) Value(key any) any {
+	// 支持 ctxKey 类型查找
+	if k, ok := key.(ctxKey); ok {
+		return c.parent.Value(k)
 	}
-
-	return nil
+	// 兼容外部用 string key 查找
+	if k, ok := key.(string); ok {
+		return c.parent.Value(ctxKey(k))
+	}
+	return c.parent.Value(key)
 }
 
-// Set 设置参数
-// 会根据 value 的类型，自动设置对应属性的值，目前支持： ApiVersion, BodyProperty
-func (c *httpContext) Set(key string, value interface{}) IHttpContext {
+// Set 设置参数，通过 context.WithValue 存入 parent 链
+func (c *httpContext) Set(key string, value any) IHttpContext {
 	if len(key) == 0 {
 		return c
 	}
+	c.parent = context.WithValue(c.parent, ctxKey(key), value)
+	return c
+}
 
-	//// API 版本号
-	//if av, ok := value.(ApiVersion); ok && av.Verify() {
-	//	c.version = av
-	//	return
-	//}
-	//
-	//// 响应正文属性
-	//if bp, ok := value.(BodyProperty); ok && bp.Verify() {
-	//	c.bodyProperty = bp
-	//	return
-	//}
-
-	// 用户信息
-	if v, ok := value.(User); ok {
-		c.user = &v
-		return c
-	}
-
-	// 延迟初始化
-	if c.storage == nil {
-		c.storage = make(map[string]interface{})
-	}
-
-	c.storage[key] = value
+func (c *httpContext) SetUser(user User) IHttpContext {
+	clone := user.Clone()
+	c.user = &clone
 	return c
 }
 

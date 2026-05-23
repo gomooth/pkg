@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"io"
+	"net/http"
 
 	"github.com/gomooth/pkg/http/httpcontext"
 
@@ -18,9 +19,14 @@ func HttpContext() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		// 取出 request body
 		body, _ := ctx.GetRawData()
-		stx := httpcontext.NewContext(
+		stx, err := httpcontext.NewContext(
+			httpcontext.WithParent(ctx.Request.Context()),
 			httpcontext.WithRawRequestBody(body),
 		)
+		if err != nil {
+			ctx.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
 
 		// 重新写入 request body
 		ctx.Request.Body = io.NopCloser(bytes.NewBuffer(body))

@@ -6,22 +6,37 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/save95/xerror"
+	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/pkg/http/jwt"
+	"github.com/gomooth/xerror"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/gomooth/pkg/http/jwt"
 )
 
 type singleRedisStore struct {
-	client *redis.Client
+	client   *redis.Client
+	hashFunc jwt.HashFunc
 }
 
 // NewSingleRedisStore 单客户端有状态 token 存储
 // 一个用户只能登录一个客户端，旧的客户端会被踢掉
-func NewSingleRedisStore(client *redis.Client) jwt.StatefulStore {
-	return &singleRedisStore{
-		client: client,
+func NewSingleRedisStore(client *redis.Client, opts ...func(*singleRedisStore)) jwt.StatefulStore {
+	s := &singleRedisStore{
+		client:   client,
+		hashFunc: jwt.DefaultHashFunc,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// WithSingleHashFunc sets the hash function for token storage.
+func WithSingleHashFunc(fn jwt.HashFunc) func(*singleRedisStore) {
+	return func(s *singleRedisStore) {
+		if fn != nil {
+			s.hashFunc = fn
+		}
 	}
 }
 
@@ -29,65 +44,77 @@ func (s *singleRedisStore) getKey(userID uint) string {
 	return fmt.Sprintf("jwt:single:%d", userID)
 }
 
-func (s *singleRedisStore) Save(userID uint, token string, expireTs int64) error {
+var singleRemoveScript = redis.NewScript(`
+	local val = redis.call('GET', KEYS[1])
+	if val == ARGV[1] then
+		return redis.call('DEL', KEYS[1])
+	end
+	return 0
+`)
+
+var singleCheckScript = redis.NewScript(`
+	local val = redis.call('GET', KEYS[1])
+	if val == false then
+		return redis.error_reply('NOT_FOUND')
+	end
+	-- 注意：~= 是非常量时间比较，理论上存在时序攻击风险。
+	-- 但由于存储的已经是 SHA256 哈希值（非原始 token），攻击者需先破解哈希才能利用时序差，
+	-- 实际攻击难度极高。若需进一步加固，可改用 HMAC-SHA256 对哈希值做二次处理。
+	if val ~= ARGV[1] then
+		return redis.error_reply('MISMATCH')
+	end
+	return 1
+`)
+
+func (s *singleRedisStore) Save(ctx context.Context, userID uint, token string, expireTs int64) error {
 	if s.client == nil {
-		return xerror.New("jwt store redis client is nil")
+		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwtstore: redis client is nil")
 	}
 
-	ctx := context.Background()
 	key := s.getKey(userID)
-	expire := time.Second * time.Duration(expireTs)
-	return s.client.Set(ctx, key, token, expire).Err()
+	ttl := time.Until(time.Unix(expireTs, 0))
+	if ttl <= 0 {
+		return xerror.NewXCode(xcode.ErrJWTTokenExpired, "jwtstore: token already expired before save")
+	}
+	return s.client.Set(ctx, key, s.hashFunc(token), ttl).Err()
 }
 
-func (s *singleRedisStore) Check(userID uint, token string) error {
+func (s *singleRedisStore) Check(ctx context.Context, userID uint, token string) error {
 	if s.client == nil {
-		return xerror.New("jwt store redis client is nil")
+		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwtstore: redis client is nil")
 	}
 
-	ctx := context.Background()
 	key := s.getKey(userID)
-	str, err := s.client.Get(ctx, key).Result()
-	if nil != err {
-		return err
-	}
-
-	if str != token {
-		return errors.New("token error")
-	}
-
-	return nil
-}
-
-func (s *singleRedisStore) Remove(userID uint, token string) error {
-	if s.client == nil {
-		return xerror.New("jwt store redis client is nil")
-	}
-
-	ctx := context.Background()
-	key := s.getKey(userID)
-
-	str, err := s.client.Get(ctx, key).Result()
-	if nil != err {
+	_, err := singleCheckScript.Run(ctx, s.client, []string{key}, s.hashFunc(token)).Result()
+	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil
+			return xerror.NewXCode(xcode.ErrJWTTokenRevoked, "jwtstore: token not found or revoked")
+		}
+		// Lua 脚本返回 MISMATCH 也视为已撤销
+		if err.Error() == "MISMATCH" {
+			return xerror.NewXCode(xcode.ErrJWTTokenRevoked, "jwtstore: token mismatch, token revoked by newer login")
 		}
 		return err
 	}
-
-	if str == token {
-		return s.client.Del(ctx, key).Err()
-	}
-
-	return errors.New("token err")
+	return nil
 }
 
-func (s *singleRedisStore) Clean(userID uint) error {
+func (s *singleRedisStore) Remove(ctx context.Context, userID uint, token string) error {
 	if s.client == nil {
-		return xerror.New("jwt store redis client is nil")
+		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwtstore: redis client is nil")
 	}
 
-	ctx := context.Background()
+	key := s.getKey(userID)
+
+	_, err := singleRemoveScript.Run(ctx, s.client, []string{key}, s.hashFunc(token)).Result()
+	return err
+}
+
+func (s *singleRedisStore) Clean(ctx context.Context, userID uint) error {
+	if s.client == nil {
+		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwtstore: redis client is nil")
+	}
+
 	key := s.getKey(userID)
 	return s.client.Del(ctx, key).Err()
 }

@@ -1,20 +1,22 @@
 package middleware
 
 import (
-	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gomooth/pkg/http/middleware/internal/restful"
+	"github.com/gomooth/xerror"
+	"github.com/gomooth/xerror/xcode"
 )
 
 // RESTFul Restful 标准检测解析中间件
 func RESTFul(version string) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		if err := restful.New(ctx, version).Handle(); nil != err {
-			fmt.Printf("not support accept: %s\n", err)
-			_ = ctx.AbortWithError(http.StatusBadRequest, fmt.Errorf("not support accept"))
+		if err := restful.New(ctx, version).Handle(); err != nil {
+			slog.Warn("not support accept", slog.String("component", "restful"), slog.String("error", err.Error()))
+			_ = ctx.AbortWithError(http.StatusBadRequest, xerror.NewXCode(xcode.RequestParamError, "not support accept"))
 			return
 		}
 
@@ -39,9 +41,9 @@ func RESTFulWithIgnores(version string, ignorePaths ...IgnorePath) gin.HandlerFu
 			}
 		}
 
-		if err := restful.New(ctx, version).Handle(); nil != err {
-			fmt.Printf("not support accept: %s\n", err)
-			_ = ctx.AbortWithError(http.StatusBadRequest, fmt.Errorf("not support accept"))
+		if err := restful.New(ctx, version).Handle(); err != nil {
+			slog.Warn("not support accept", slog.String("component", "restful"), slog.String("error", err.Error()))
+			_ = ctx.AbortWithError(http.StatusBadRequest, xerror.NewXCode(xcode.RequestParamError, "not support accept"))
 			return
 		}
 

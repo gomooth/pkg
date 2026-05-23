@@ -1,20 +1,13 @@
 package job
 
 import (
-	"context"
-
-	"github.com/save95/xlog"
+	"log/slog"
+	"time"
 )
 
 type WrapperOption func(*cronJobWrapper)
 
-func WrapWithContext(ctx context.Context) WrapperOption {
-	return func(job *cronJobWrapper) {
-		job.ctx = ctx
-	}
-}
-
-func WrapWithLogger(log xlog.XLogger) WrapperOption {
+func WrapWithLogger(log *slog.Logger) WrapperOption {
 	return func(job *cronJobWrapper) {
 		job.log = log
 	}
@@ -29,5 +22,14 @@ func WrapWithMaxRetry(retry uint8) WrapperOption {
 func WrapWithFailedSaver(saver func(jobName string, in []string, err error)) WrapperOption {
 	return func(job *cronJobWrapper) {
 		job.failedSaver = saver
+	}
+}
+
+// WrapWithTimeout 设置整体重试循环的超时时间，0 表示无超时（默认）
+func WrapWithTimeout(d time.Duration) WrapperOption {
+	return func(job *cronJobWrapper) {
+		if d > 0 {
+			job.timeout = d
+		}
 	}
 }

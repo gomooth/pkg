@@ -1,16 +1,14 @@
 package middleware
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/gomooth/pkg/http/jwt"
 	"github.com/gomooth/pkg/http/middleware/internal/httpcache"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/save95/xlog"
 )
 
 // HttpCache http 响应缓存
@@ -20,7 +18,7 @@ import (
 //	r.Use(middleware.HttpCache(
 //		middleware.WithHttpCacheDebug(),
 //		middleware.WithHttpCacheLogger(global.Log),
-//		middleware.WithHttpCacheJWTOption(global.JWTOption(false)),
+//		middleware.WithHttpCacheUserIDFunc(jwt.ParseUserIDFromGin(global.JWTOption(false))),
 //		middleware.WithHttpCacheGlobalDuration(5*time.Minute),
 //		middleware.WithHttpCacheRedisStore(redis.NewClient(&redis.Options{
 //			Addr:     global.Config.HttpCache.Addr,
@@ -34,6 +32,12 @@ func HttpCache(opts ...httpcache.Option) gin.HandlerFunc {
 	return httpcache.New(opts...)
 }
 
+// HttpCacheWithCloser 创建 httpcache 中间件，同时返回关闭函数。
+// 关闭函数应在应用关闭时调用，以释放 store 持有的资源（如内部创建的 Redis 连接）。
+func HttpCacheWithCloser(opts ...httpcache.Option) (gin.HandlerFunc, func() error) {
+	return httpcache.NewWithCloser(opts...)
+}
+
 // WithHttpCacheRedisStoreBy 通过地址设置缓存存储器 redis 连接
 func WithHttpCacheRedisStoreBy(addr string, db uint) httpcache.Option {
 	return httpcache.WithRedisStoreBy(addr, db)
@@ -45,7 +49,7 @@ func WithHttpCacheRedisStore(client *redis.Client) httpcache.Option {
 }
 
 // WithHttpCacheLogger 设置日志器
-func WithHttpCacheLogger(log xlog.XLogger) httpcache.Option {
+func WithHttpCacheLogger(log *slog.Logger) httpcache.Option {
 	return httpcache.WithLogger(log)
 }
 
@@ -54,9 +58,9 @@ func WithHttpCacheDebug(enabled bool) httpcache.Option {
 	return httpcache.WithDebug(enabled)
 }
 
-// WithHttpCacheJWTOption jwt 鉴权参与缓存
-func WithHttpCacheJWTOption(opt *jwt.Option) httpcache.Option {
-	return httpcache.WithJWTOption(opt)
+// WithHttpCacheUserIDFunc 设置从请求上下文提取用户 ID 的回调函数，用于 withToken 路由
+func WithHttpCacheUserIDFunc(fn func(*gin.Context) (uint, error)) httpcache.Option {
+	return httpcache.WithUserIDFunc(fn)
 }
 
 // WithHttpCacheGlobalDuration 全局缓存有效时间

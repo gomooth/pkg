@@ -1,13 +1,14 @@
 package restful
 
 import (
-	"errors"
 	"regexp"
 	"strings"
 
 	"github.com/hashicorp/go-version"
 
 	"github.com/gomooth/pkg/http/httpcontext"
+	"github.com/gomooth/xerror"
+	"github.com/gomooth/xerror/xcode"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,7 +26,7 @@ func New(ctx *gin.Context, version string) *handler {
 }
 
 func (h handler) Handle() error {
-	if err := h.parseAccept(); nil != err {
+	if err := h.parseAccept(); err != nil {
 		return err
 	}
 
@@ -34,7 +35,7 @@ func (h handler) Handle() error {
 
 func (h handler) parseAccept() error {
 	stx, err := httpcontext.MustParse(h.ctx)
-	if nil != err {
+	if err != nil {
 		return err
 	}
 
@@ -58,12 +59,12 @@ func (h handler) parseAccept() error {
 	if len(params) == 5 {
 		v := params[2]
 		if _, err := version.NewVersion(v); err != nil {
-			return errors.New("not support api version")
+			return xerror.NewXCode(xcode.RequestParamError, "not support api version")
 		}
 
 		bp := params[4]
 		if bp != "raw" && bp != "text" && bp != "html" && bp != "full" {
-			return errors.New("not support custom media type")
+			return xerror.NewXCode(xcode.RequestParamError, "not support custom media type")
 		}
 
 		stx.Set("version", v).
@@ -72,5 +73,5 @@ func (h handler) parseAccept() error {
 		return nil
 	}
 
-	return errors.New("not support custom media type")
+	return xerror.NewXCode(xcode.RequestParamError, "not support custom media type")
 }

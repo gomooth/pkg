@@ -28,7 +28,7 @@ type ruleItem struct {
 }
 
 func (m *ruleItem) String() string {
-	bs, _ := json.Marshal(map[string]interface{}{
+	bs, _ := json.Marshal(map[string]any{
 		"withToken":  m.withToken,
 		"fields":     m.fields,
 		"skipFields": m.skipFields,

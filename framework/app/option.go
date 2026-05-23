@@ -1,8 +1,11 @@
 package app
 
-import "github.com/save95/xlog"
+import (
+	"log/slog"
+	"time"
+)
 
-func WithLogger(log xlog.XLog) func(*manager) {
+func WithLogger(log *slog.Logger) func(*manager) {
 	return func(m *manager) {
 		m.log = log
 	}
@@ -14,5 +17,21 @@ func WithApp(app IApp) func(*manager) {
 			m.apps = make([]IApp, 0)
 		}
 		m.Register(app)
+	}
+}
+
+// WithShutdownTimeout 设置优雅关闭超时时间，默认 30 秒
+func WithShutdownTimeout(d time.Duration) func(*manager) {
+	return func(m *manager) {
+		if d > 0 {
+			m.shutdownTimeout = d
+		}
+	}
+}
+
+// WithStartupTimeout 设置单个应用启动超时时间，0 表示不限制
+func WithStartupTimeout(d time.Duration) func(*manager) {
+	return func(m *manager) {
+		m.startupTimeout = d
 	}
 }

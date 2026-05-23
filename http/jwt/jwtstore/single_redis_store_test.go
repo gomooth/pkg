@@ -1,13 +1,15 @@
 package jwtstore
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
-
-var _redisClient *redis.Client
 
 var (
 	_userID = uint(100008)
@@ -17,28 +19,33 @@ var (
 		"tIqsOkAqXCum1AhiCTAMB4GqNmduU63l-3",
 		"tIqsOkAqXCum1AhiCTAMB4GqNmduU63l-4",
 	}
-	_ts = int64(86400)
 )
 
-func init() {
-	_redisClient = redis.NewClient(&redis.Options{
-		Addr: "127.0.0.1:6379",
+func newTestRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(mr.Close)
+	return redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
 		DB:   2,
 	})
 }
 
 func TestSingleRedisStore(t *testing.T) {
-	store := NewSingleRedisStore(_redisClient)
+	client := newTestRedisClient(t)
+	store := NewSingleRedisStore(client)
+	_ts := time.Now().Add(24 * time.Hour).Unix()
 
 	// 多次登录
 	for _, token := range _tokens {
-		err := store.Save(_userID, token, _ts)
+		err := store.Save(context.Background(), _userID, token, _ts)
 		assert.Nil(t, err)
 	}
 
 	// 判断 token
 	for i, token := range _tokens {
-		err := store.Check(_userID, token)
+		err := store.Check(context.Background(), _userID, token)
 		if i != len(_tokens)-1 {
 			assert.NotNil(t, err)
 		} else {
@@ -46,14 +53,14 @@ func TestSingleRedisStore(t *testing.T) {
 		}
 	}
 
-	// 删除 token
-	err := store.Remove(_userID, "error-token")
-	assert.NotNil(t, err)
+	// 删除不匹配的 token（Lua 脚本不匹配时返回 0 而非错误）
+	err := store.Remove(context.Background(), _userID, "error-token")
+	assert.Nil(t, err)
 
-	err = store.Remove(_userID, _tokens[len(_tokens)-1])
+	err = store.Remove(context.Background(), _userID, _tokens[len(_tokens)-1])
 	assert.Nil(t, err)
 
 	// 清理 token
-	err = store.Clean(_userID)
+	err = store.Clean(context.Background(), _userID)
 	assert.Nil(t, err)
 }

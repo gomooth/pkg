@@ -1,29 +1,30 @@
 package logger
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
+
 	"github.com/go-resty/resty/v2"
-	"github.com/save95/xlog"
 )
 
 type apiLogger struct {
-	xl xlog.XLogger
+	l *slog.Logger
 }
 
 // RestyWrapper Resty 日志包装器
-func RestyWrapper(l xlog.XLogger) resty.Logger {
-	return &apiLogger{
-		xl: l,
-	}
+func RestyWrapper(l *slog.Logger) resty.Logger {
+	return &apiLogger{l: l}
 }
 
-func (l *apiLogger) Errorf(format string, v ...interface{}) {
-	l.xl.Errorf(format, v...)
+func (a *apiLogger) Errorf(format string, v ...interface{}) {
+	a.l.LogAttrs(context.Background(), slog.LevelError, fmt.Sprintf(format, v...))
 }
 
-func (l *apiLogger) Warnf(format string, v ...interface{}) {
-	l.xl.Warningf(format, v...)
+func (a *apiLogger) Warnf(format string, v ...interface{}) {
+	a.l.LogAttrs(context.Background(), slog.LevelWarn, fmt.Sprintf(format, v...))
 }
 
-func (l *apiLogger) Debugf(format string, v ...interface{}) {
-	l.xl.Debugf(format, v...)
+func (a *apiLogger) Debugf(format string, v ...interface{}) {
+	a.l.LogAttrs(context.Background(), slog.LevelDebug, fmt.Sprintf(format, v...))
 }

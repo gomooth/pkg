@@ -1,19 +1,23 @@
 package job
 
-import "github.com/robfig/cron/v3"
+import (
+	"context"
+
+	"github.com/robfig/cron/v3"
+)
 
 type ICommandJob interface {
-	Run(args ...string) error
+	Run(ctx context.Context, args ...string) error
 }
 
 type IWrapper interface {
-	FromCommandJob(job ICommandJob, args ...string) cron.Job
+	FromCommandJob(ctx context.Context, job ICommandJob, args ...string) cron.Job
 }
 
 type ICronjobRegister interface {
-	Register(spec string, cmd ICommandJob)
+	Register(ctx context.Context, spec string, cmd ICommandJob)
 }
 
 type ICommandRegister interface {
-	Register(name string, cmd ICommandJob)
+	Register(ctx context.Context, name string, cmd ICommandJob)
 }

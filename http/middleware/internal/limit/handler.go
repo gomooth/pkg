@@ -6,13 +6,21 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gomooth/pkg/framework/metrics"
 
 	"github.com/ulule/limiter/v3"
 )
 
+var limitMeter = metrics.GetProvider().Meter("limit")
+
+var (
+	limitRejectedCounter = limitMeter.Int64Counter("limit.rejected")
+)
+
 // RateLimiter 创建限速器中间件
-func RateLimiter(key string, limit *limiter.Limiter) gin.HandlerFunc {
+func RateLimiter(keyFn func(*gin.Context) string, limit *limiter.Limiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		key := keyFn(c)
 		ctx, err := limit.Get(c, key)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
@@ -21,6 +29,8 @@ func RateLimiter(key string, limit *limiter.Limiter) gin.HandlerFunc {
 			return
 		}
 		if ctx.Reached {
+			limitRejectedCounter.Add(c.Request.Context(), 1)
+
 			resetAt := time.Unix(ctx.Reset, 0)
 			retryAfter := int64(resetAt.Sub(time.Now()).Seconds())
 

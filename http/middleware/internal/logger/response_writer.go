@@ -19,7 +19,7 @@ func newResponseWriter(w gin.ResponseWriter) *responseWriter {
 	}
 }
 
-func (r responseWriter) Write(b []byte) (int, error) {
+func (r *responseWriter) Write(b []byte) (int, error) {
 	r.body.Write(b)
 	return r.ResponseWriter.Write(b)
 }

@@ -1,23 +1,19 @@
 package kafkaproducer
 
 import (
+	"log/slog"
 	"time"
 
-	"github.com/save95/xlog"
+	"github.com/IBM/sarama"
 )
 
 // WithLogger 设置日志器
-func WithLogger(logger xlog.XLogger) func(*producer) {
+func WithLogger(logger *slog.Logger) func(*producer) {
 	return func(p *producer) {
+		sarama.Logger = newSaramaLogger(logger)
 		p.logger = logger
 	}
 }
-
-//func WithBrokers(brokers []string) func(*producer) {
-//	return func(p *producer) {
-//		p.brokers = brokers
-//	}
-//}
 
 // WithTimeout 设置超时时间
 func WithTimeout(timeout time.Duration) func(*producer) {

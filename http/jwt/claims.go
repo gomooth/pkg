@@ -1,10 +1,24 @@
 package jwt
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte("gomooth-pkg.JwtSecret")
+// GenerateSecret 生成一个安全的随机密钥，方便测试或开发环境使用。
+// 生产环境建议使用配置文件中的固定密钥。
+func GenerateSecret(size int) []byte {
+	if size < 16 {
+		size = 32
+	}
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		panic("jwt: failed to generate random secret: " + err.Error())
+	}
+	return []byte(base64.StdEncoding.EncodeToString(b))
+}
 
 type claims struct {
 	jwt.RegisteredClaims

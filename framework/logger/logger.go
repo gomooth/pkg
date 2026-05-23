@@ -1,30 +1,26 @@
 package logger
 
 import (
-	"github.com/gomooth/pkg/framework/logger/internal/console"
-	"github.com/gomooth/pkg/framework/logger/internal/logrus"
-	"github.com/gomooth/pkg/framework/logger/internal/slog"
-	"github.com/gomooth/pkg/framework/logger/internal/types"
+	"log/slog"
 
-	"github.com/save95/xlog"
+	"github.com/gomooth/pkg/framework/logger/internal/console"
+	"github.com/gomooth/pkg/framework/logger/internal/filelog"
+	"github.com/gomooth/pkg/framework/logger/internal/types"
 )
 
-// NewLogrusLogger 文件日志器。使用 logrus 实现，支持日志文件自动分割
-func NewLogrusLogger(path string, opts ...func(*types.Option)) xlog.XLogger {
-	return logrus.NewWith(path, opts...)
+// NewFileLogger 创建文件日志器，支持日志文件自动分割
+func NewFileLogger(path string, opts ...func(*types.Option)) *slog.Logger {
+	return filelog.NewWith(path, opts...)
 }
 
-// NewConsoleLogger 控制台日志器
-func NewConsoleLogger() xlog.XLogger {
-	return console.New()
+// NewConsoleLogger 创建控制台日志器
+func NewConsoleLogger(opts ...func(*types.Option)) *slog.Logger {
+	return console.New(opts...)
 }
 
-// NewSlogLogger 文件日志器。使用 slog 实现，支持日志文件自动分割
-func NewSlogLogger(path string, opts ...func(*types.Option)) xlog.XLogger {
-	return slog.NewWith(path, opts...)
-}
-
-// InitSlog 初始化 slog 的默认 logger，使业务侧可以直接使用 slog 包
-func InitSlog(logger xlog.XLogger) {
-	slog.Init(logger)
+// SetDefault 设置 slog 默认日志器，设置后可直接使用 slog.Info() 等全局方法
+func SetDefault(l *slog.Logger) {
+	if l != nil {
+		slog.SetDefault(l)
+	}
 }

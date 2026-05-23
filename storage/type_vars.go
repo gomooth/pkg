@@ -1,35 +1,45 @@
 package storage
 
-const storageRoot = "storage"
+var storageRoot = "storage"
+
+// Option storage 配置选项
+type Option struct {
+	root string
+}
+
+// WithRoot 设置存储根目录
+func WithRoot(root string) func(*Option) {
+	return func(o *Option) { o.root = root }
+}
 
 type IStorage interface {
 	// Dir 获得文件存储的目录
-	Dir() string
+	Dir() (string, error)
 	// Path 获得文件存储的路径
-	Path() string
+	Path() (string, error)
 	// Filename 获得文件名
-	Filename() string
+	Filename() (string, error)
 }
 
 type IPrivateStorage interface {
 	IStorage
 
-	// AppendDir 追加存储目录
+	// AppendDir 追加存储目录（链式调用）
 	AppendDir(dirs ...string) IPrivateStorage
-	// SetName 设置文件名
+	// SetName 设置文件名（链式调用）
 	SetName(name string) IPrivateStorage
 }
 
 type IPublicStorage interface {
 	IStorage
 
-	// AppendDir 追加存储目录
+	// AppendDir 追加存储目录（链式调用）
 	AppendDir(dirs ...string) IPublicStorage
-	// SetName 设置文件名
+	// SetName 设置文件名（链式调用）
 	SetName(name string) IPublicStorage
 
 	// URL 获得文件的访问链接（不含 host）
-	URL() string
+	URL() (string, error)
 	// URLWithHost 获得文件的访问链接（含 host）
-	URLWithHost(host string) string
+	URLWithHost(host string) (string, error)
 }

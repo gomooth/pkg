@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/save95/xerror"
+	"github.com/gomooth/xerror"
 )
 
 // DayStatRequest 通用日统计请求。都为空时，默认获取当周数据
@@ -21,7 +21,7 @@ func (in *DayStatRequest) StatAtRange() ([]time.Time, error) {
 
 func (in *DayStatRequest) StatAtRangeOrLastWeek() []time.Time {
 	r, err := in.computeStatAt()
-	if nil != err {
+	if err != nil {
 		monday := in.getMonday()
 		sunday := monday.Add(6 * 24 * time.Hour)
 
@@ -33,7 +33,7 @@ func (in *DayStatRequest) StatAtRangeOrLastWeek() []time.Time {
 
 func (in *DayStatRequest) StatDayRange() ([]uint, error) {
 	r, err := in.computeStatAt()
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 
@@ -45,7 +45,7 @@ func (in *DayStatRequest) StatDayRange() ([]uint, error) {
 
 func (in *DayStatRequest) StatDayRangeOrLastWeek() []uint {
 	r, err := in.computeStatAt()
-	if nil != err {
+	if err != nil {
 		monday := in.getMonday()
 		start, _ := strconv.Atoi(monday.Format("20060102"))
 
@@ -63,12 +63,12 @@ func (in *DayStatRequest) StatDayRangeOrLastWeek() []uint {
 
 func (in *DayStatRequest) computeStatAt() ([]time.Time, error) {
 	startAt, err := time.ParseInLocation("2006-01-02", in.StartDay, time.Local)
-	if nil != err {
+	if err != nil {
 		return nil, xerror.Wrap(err, "开始日期格式错误，必须为 2006-01-02")
 	}
 
 	endAt, err := time.ParseInLocation("2006-01-02", in.EndDay, time.Local)
-	if nil != err {
+	if err != nil {
 		return nil, xerror.Wrap(err, "结束日期格式错误，必须为 2006-01-02")
 	}
 

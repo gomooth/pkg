@@ -8,8 +8,8 @@ import (
 type ICache[T any] interface {
 	// Get 获取缓存，返回缓存数据的 json 字符串，ttl, 和错误
 	Get(ctx context.Context, key string) (*T, time.Duration, error)
-	// Pull 获取缓存，并删除缓存
-	Pull(ctx context.Context, key string) (*T, error)
+	// GetAndDelete 获取缓存并删除。注意：此操作非原子，并发场景下可能多次读取同一值
+	GetAndDelete(ctx context.Context, key string) (*T, error)
 	// Set 设置缓存
 	Set(ctx context.Context, key string, val *T, expire time.Duration) error
 	// Remember 如果缓存不存在，则通过 fun 函数获取数据，并缓存。该函数返回 缓存数据和错误

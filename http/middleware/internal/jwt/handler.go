@@ -2,9 +2,20 @@ package jwt
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/xcode"
 	"github.com/gomooth/pkg/http/httpcontext"
 	"github.com/gomooth/pkg/http/jwt"
-	"github.com/pkg/errors"
+	"github.com/gomooth/xerror"
+
+	"go.opentelemetry.io/otel/metric"
+)
+
+var jwtMeter = metrics.GetProvider().Meter("jwt")
+
+var (
+	jwtOperationCounter    = jwtMeter.Int64Counter("jwt.operation")
+	jwtTokenRefreshCounter = jwtMeter.Int64Counter("jwt.token.refresh")
 )
 
 type IHandler interface {
@@ -26,48 +37,88 @@ func NewHandler(ctx *gin.Context, opt *jwt.Option) IHandler {
 // Handle 鉴权处理
 // 只负责验证是否登陆，不处理其他事务
 func (h *handler) Handle() error {
-	if h.opt == nil || h.opt.RoleConvert == nil {
-		return errors.New("jwt option empty")
+	if h.opt == nil || h.opt.RoleConvert() == nil {
+		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+			metrics.Attr("handler", "stateless"),
+			metrics.Attr("result", "parse_error"),
+		))
+		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwt: option is empty")
 	}
 
-	_, token, err := jwt.ParseTokenWithSecret(h.ctx, h.opt.Secret)
-	if nil != err {
-		return errors.WithMessage(err, "token error")
+	_, token, err := jwt.ParseTokenWithGinAndOption(h.ctx, h.opt)
+	if err != nil {
+		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+			metrics.Attr("handler", "stateless"),
+			metrics.Attr("result", "parse_error"),
+		))
+		return xerror.WrapWithXCode(err, xcode.ErrJWTTokenInvalid)
 	}
 
 	if token.IsExpired() {
-		return errors.New("token expired")
+		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+			metrics.Attr("handler", "stateless"),
+			metrics.Attr("result", "expired"),
+		))
+		return xerror.NewXCode(xcode.ErrJWTTokenExpired, "jwt: token expired")
 	}
 
 	if token.IsStateful() {
-		return errors.New("token is stateful, please use middleware.JWTStatefulWith")
+		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+			metrics.Attr("handler", "stateless"),
+			metrics.Attr("result", "parse_error"),
+		))
+		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwt: stateless token required, use JWTWith middleware")
 	}
 
-	// 自动刷新 token
-	if h.opt.RefreshDuration > 0 {
-		token.RefreshNear(h.opt.RefreshDuration)
-		// 失败，则跳过，只处理成功的情况
-		if newToken, err := token.ToString(); nil == err {
-			h.ctx.Header(jwt.TokenHeaderKey, newToken)
-		}
-	}
-
-	// 基础用户信息
-	user, err := token.GetUser(h.opt.RoleConvert)
+	user, err := token.GetUser(h.opt.RoleConvert())
 	if err != nil {
-		if h.opt.SilentMode {
-			return nil
+		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+			metrics.Attr("handler", "stateless"),
+			metrics.Attr("result", "parse_error"),
+		))
+		return err
+	}
+
+	if h.opt.RefreshDuration() > 0 {
+		token.RefreshNear(h.opt.RefreshDuration())
+		if newToken, err := token.ToString(h.ctx.Request.Context()); err == nil {
+			h.ctx.Header(jwt.TokenHeaderKey, newToken)
+			jwtTokenRefreshCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+				metrics.Attr("handler", "stateless"),
+				metrics.Attr("result", "success"),
+			))
 		} else {
-			return err
+			jwtTokenRefreshCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+				metrics.Attr("handler", "stateless"),
+				metrics.Attr("result", "failure"),
+			))
 		}
 	}
 
-	// 写入自定义上下文
-	if v, ok := h.ctx.Get(httpcontext.ContextKey); ok {
-		stx := v.(httpcontext.IHttpContext)
-		stx.Set("user", *user).
-			StorageTo(h.ctx)
-	}
+	ensureUserInContext(h.ctx, user)
 
+	jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
+		metrics.Attr("handler", "stateless"),
+		metrics.Attr("result", "success"),
+	))
 	return nil
+}
+
+// ensureUserInContext 将用户信息写入 httpcontext，若 context 不存在则自动创建。
+// 若 stx 中已有用户信息则跳过（幂等），避免多个 JWT 中间件重复覆盖。
+func ensureUserInContext(ctx *gin.Context, user *httpcontext.User) {
+	var stx httpcontext.IHttpContext
+	if v, ok := ctx.Get(httpcontext.ContextKey); ok {
+		stx, _ = v.(httpcontext.IHttpContext)
+	}
+	if stx == nil {
+		var err error
+		stx, err = httpcontext.NewContext()
+		if err != nil {
+			return
+		}
+	} else if stx.User() != nil {
+		return
+	}
+	stx.SetUser(*user).StorageTo(ctx)
 }

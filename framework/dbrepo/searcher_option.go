@@ -1,18 +1,31 @@
 package dbrepo
 
-import "gorm.io/gorm"
+import (
+	"github.com/gomooth/pkg/framework/dbquery"
+	"gorm.io/gorm"
+)
 
-type builderOptionBuilder[M any, F any] func(*searcher[M, F])
+// SearcherOption searcher 构造选项
+type SearcherOption[M any, F any] func(*searcher[M, F])
 
-func WithFilterTransfer[M any, F any](transfer func(f *F, db *gorm.DB) *gorm.DB) builderOptionBuilder[M, F] {
-	return func(q *searcher[M, F]) {
-		q.filterTransfer = transfer
+// WithFilterTransfer 设置过滤条件转换函数
+func WithFilterTransfer[M any, F any](transfer func(f *F, db *gorm.DB) *gorm.DB) SearcherOption[M, F] {
+	return func(s *searcher[M, F]) {
+		s.filterTransfer = transfer
 	}
 }
 
-func WithSortKeyMap[M any, F any](mapping map[string]string) builderOptionBuilder[M, F] {
-	return func(q *searcher[M, F]) {
-		q.sortKeyMapping = mapping
+// WithSortMapping 设置排序字段映射，替代旧的 WithSortKeyMap
+func WithSortMapping[M any, F any](m *dbquery.SortMapping) SearcherOption[M, F] {
+	return func(s *searcher[M, F]) {
+		s.sortMapping = m
+	}
+}
+
+// WithCursorExtractor 设置游标值提取函数，用于 ListByCursor 从最后一条记录提取下一页游标
+func WithCursorExtractor[M any, F any](fn func(*M) string) SearcherOption[M, F] {
+	return func(s *searcher[M, F]) {
+		s.cursorExtractor = fn
 	}
 }
 
@@ -40,62 +53,3 @@ func WithSelect(selects ...string) findOptionBuilder {
 		opt.selects = append(opt.selects, selects...)
 	}
 }
-
-//func WithSortFlag(flag string) findOptionBuilder {
-//	return func(opt *findOption) {
-//		opt.sortFlag = flag
-//	}
-//}
-//
-//func WithLimit(limit int) findOptionBuilder {
-//	return func(opt *findOption) {
-//		opt.limit = limit
-//	}
-//}
-//
-//func WithStart(start int) findOptionBuilder {
-//	return func(opt *findOption) {
-//		opt.start = start
-//	}
-//}
-
-//// QueryOption 查询选项
-//type QueryOption func(*gorm.DB) *gorm.DB
-//
-//// WithPreload 预加载关联
-//func WithPreload(preloads ...string) QueryOption {
-//	return func(db *gorm.DB) *gorm.DB {
-//		for _, preload := range preloads {
-//			db = db.Preload(preload)
-//		}
-//		return db
-//	}
-//}
-//
-//// WithSelect 选择字段
-//func WithSelect(selects ...string) QueryOption {
-//	return func(db *gorm.DB) *gorm.DB {
-//		return db.Select(selects)
-//	}
-//}
-//
-//// WithOrder 排序
-//func WithOrder(order string) QueryOption {
-//	return func(db *gorm.DB) *gorm.DB {
-//		return db.Order(order)
-//	}
-//}
-//
-//// WithLimit 限制数量
-//func WithLimit(limit int) QueryOption {
-//	return func(db *gorm.DB) *gorm.DB {
-//		return db.Limit(limit)
-//	}
-//}
-//
-//// WithOffset 偏移量
-//func WithOffset(offset int) QueryOption {
-//	return func(db *gorm.DB) *gorm.DB {
-//		return db.Offset(offset)
-//	}
-//}

@@ -3,29 +3,28 @@ package jwt
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/gomooth/pkg/http/httpcontext"
-	"github.com/pkg/errors"
+	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/xerror"
 )
 
-// MustParseJWTUser 解析 jwt User 信息。如果是静默模式（SilentMode=true）， User.ID 可能为零
-func MustParseJWTUser(ctx *gin.Context, opt *Option) (*httpcontext.User, error) {
-	if opt == nil || opt.RoleConvert == nil {
-		return nil, errors.New("jwt option empty")
+// ParseJWTUser 解析 jwt User 信息。如果是静默模式（SilentMode=true）， User.ID 可能为零
+func ParseJWTUser(ctx *gin.Context, opt *Option) (*httpcontext.User, error) {
+	if opt == nil || opt.RoleConvert() == nil {
+		return nil, xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwt: option is empty")
 	}
 
-	_, tk, err := ParseTokenWithSecret(ctx, opt.Secret)
-	if nil != err {
-		return nil, errors.WithMessage(err, "token error")
+	_, tk, err := ParseTokenWithSecret(ctx, opt.Secret(), opt.LegacySecrets()...)
+	if err != nil {
+		return nil, xerror.WrapWithXCode(err, xcode.ErrJWTTokenInvalid)
 	}
 
 	if tk.IsExpired() {
-		return nil, errors.New("token expired")
+		return nil, xerror.NewXCode(xcode.ErrJWTTokenExpired, "jwt: token expired")
 	}
 
-	// 基础用户信息
-	user, err := tk.GetUser(opt.RoleConvert)
+	user, err := tk.GetUser(opt.RoleConvert())
 	if err != nil {
-		// 非静默模式，返回错误
-		if !opt.SilentMode {
+		if !opt.SilentMode() {
 			return nil, err
 		}
 	}

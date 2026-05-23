@@ -1,24 +1,22 @@
 package middleware
 
 import (
-	"strings"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gomooth/pkg/http/middleware/internal/logger"
-	"github.com/save95/xlog"
 )
 
-var _otherLogHandlers = []string{
-	"github.com/gomooth/pkg/http/middleware.HttpPrinter",
-}
+const httpLoggerDisabledKey = "gomooth/pkg/middleware:httpLoggerDisabled"
 
 type HttpLoggerOption struct {
-	Logger    xlog.XLog
-	OnlyError bool // 仅发生错误时，打印日志；否则，打印所有请求
+	Logger          *slog.Logger
+	OnlyError       bool     // 仅发生错误时，打印日志；否则，打印所有请求
+	RedactEnabled   *bool    // 是否启用敏感字段脱敏，nil 或 true 时开启，显式设为 false 关闭
+	SensitiveFields []string // 敏感字段名，日志中会被替换为 ***；为 nil 时使用默认值
 }
 
-// HttpLogger http 日志中间件；
-// 如果有其他内置日志，则该中间件不操作；内置日志有: HttpPrinter 等
+// HttpLogger http 日志中间件
 //
 // usage:
 //
@@ -28,29 +26,30 @@ type HttpLoggerOption struct {
 //		 }))
 func HttpLogger(opt HttpLoggerOption) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 注入 gin.ResponseWriter
-		l := logger.New(c)
+		redact := opt.RedactEnabled == nil || *opt.RedactEnabled
+		l := logger.New(c, redact, opt.SensitiveFields)
 
 		c.Next()
 
-		// 是否只打印错误日志
+		// 检查是否有其他日志处理器已禁用此中间件的日志输出
+		if _, disabled := c.Get(httpLoggerDisabledKey); disabled {
+			return
+		}
+
 		needLog := true
 		errors := c.Errors.ByType(gin.ErrorTypeAny)
 		if len(errors) == 0 && opt.OnlyError {
 			needLog = false
 		}
 
-		// 是否有其他内置日志中间件，有则不打印
-		hasOtherLogger := false
-		for _, s := range _otherLogHandlers {
-			if strings.Contains(strings.Join(c.HandlerNames(), ", "), s) {
-				hasOtherLogger = true
-				break
-			}
-		}
-
-		if needLog && !hasOtherLogger {
+		if needLog {
 			opt.Logger.Info(l.String())
 		}
 	}
+}
+
+// DisableHttpLogger 在 gin.Context 中标记禁用 HttpLogger 的日志输出。
+// 其他日志中间件（如 HttpPrinter）应调用此函数代替字符串匹配。
+func DisableHttpLogger(c *gin.Context) {
+	c.Set(httpLoggerDisabledKey, true)
 }

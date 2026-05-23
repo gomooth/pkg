@@ -1,10 +1,12 @@
 package middleware
 
 import (
-	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/gomooth/pkg/http/httpcontext"
+	"github.com/gomooth/xerror"
+	"github.com/gomooth/xerror/xcode"
 
 	"github.com/gin-gonic/gin"
 )
@@ -13,9 +15,9 @@ import (
 func WithRole(role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		svrCtx, err := httpcontext.MustParse(ctx)
-		if nil != err {
-			fmt.Println("role error: context convert failed")
-			_ = ctx.AbortWithError(http.StatusForbidden, fmt.Errorf("context convert failed"))
+		if err != nil {
+			slog.Error("role check failed: context convert failed", slog.String("component", "role"), slog.String("error", err.Error()))
+			_ = ctx.AbortWithError(http.StatusForbidden, xerror.NewXCode(xcode.Forbidden, "context convert failed"))
 			return
 		}
 
@@ -28,9 +30,8 @@ func WithRole(role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFun
 			}
 		}
 		if !isRole {
-			fmt.Println("role error")
-			_ = ctx.AbortWithError(http.StatusForbidden, fmt.Errorf("role error"))
-			ctx.Abort()
+			slog.Warn("role check failed: insufficient permissions", slog.String("component", "role"))
+			_ = ctx.AbortWithError(http.StatusForbidden, xerror.NewXCode(xcode.Forbidden, "role error"))
 			return
 		}
 
@@ -44,7 +45,7 @@ func WithRole(role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFun
 // 一般，在同一路由针对不同角色处理逻辑完成不同的场景很实用。
 func RoleFunc(handler gin.HandlerFunc, role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		if htx, err := httpcontext.MustParse(ctx); nil == err {
+		if htx, err := httpcontext.MustParse(ctx); err == nil {
 			isRole := false
 			roles = append([]httpcontext.IRole{role}, roles...)
 			for _, r := range roles {
@@ -67,21 +68,29 @@ func RoleFunc(handler gin.HandlerFunc, role httpcontext.IRole, roles ...httpcont
 // 如果用户不满足指定角色要求，则中断链路，返回 http status 403 错误
 func RoleFuncAbort(handler gin.HandlerFunc, role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		if htx, err := httpcontext.MustParse(ctx); nil == err {
-			isRole := false
-			roles = append([]httpcontext.IRole{role}, roles...)
-			for _, r := range roles {
-				if htx.IsRole(r) {
-					isRole = true
-					break
-				}
-			}
-			if isRole {
-				handler(ctx)
-				ctx.Next()
+		htx, err := httpcontext.MustParse(ctx)
+		if err != nil {
+			slog.Error("role check failed: context convert failed", slog.String("component", "role"), slog.String("error", err.Error()))
+			ctx.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+
+		isRole := false
+		rs := append([]httpcontext.IRole{role}, roles...)
+		for _, r := range rs {
+			if htx.IsRole(r) {
+				isRole = true
+				break
 			}
 		}
-		fmt.Println("role error, abort")
+
+		if isRole {
+			handler(ctx)
+			ctx.Next()
+			return
+		}
+
+		slog.Warn("role check failed: insufficient permissions, aborting", slog.String("component", "role"))
 		ctx.AbortWithStatus(http.StatusForbidden)
 	}
 }

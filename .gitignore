@@ -30,3 +30,7 @@ log/
 logs
 
 .claude/*.local.json
+.claude/docs
+.claude/worktrees
+.superpowers
+docs/superpowers

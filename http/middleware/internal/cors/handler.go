@@ -1,6 +1,7 @@
 package cors
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -21,11 +22,8 @@ type handler struct {
 
 func New(opts ...Option) gin.HandlerFunc {
 	h := &handler{
-		allowOriginFunc: func(origin string) bool {
-			//return origin == "https://xxxx.com"
-			return true
-		},
-		allowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		allowOriginFunc: nil, // 默认未设置，将输出警告
+		allowMethods:    []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		allowHeaders: []string{
 			"Origin", "Content-Type", "Accept", "User-Agent", "Cookie", "Authorization",
 			"X-Requested-With", "X-Auth-Token", jwt.TokenHeaderKey,
@@ -46,16 +44,24 @@ func New(opts ...Option) gin.HandlerFunc {
 		opt(h)
 	}
 
+	// 未设置 AllowOriginFunc 时，默认拒绝跨域请求（同源策略）
+	if h.allowOriginFunc == nil {
+		slog.Warn("cors: no AllowOriginFunc configured, defaulting to same-origin policy. Use WithCORSAllowOriginFunc to specify allowed origins")
+		h.allowOriginFunc = func(origin string) bool {
+			return false
+		}
+	}
+
 	return cors.New(h.getCORSConfig())
 }
 
 func (ch handler) getCORSConfig() cors.Config {
 	return cors.Config{
 		AllowOriginFunc:  ch.allowOriginFunc,
-		AllowMethods:     sliceutil.Unique(ch.allowMethods...),
-		AllowHeaders:     sliceutil.Unique(ch.allowHeaders...),
+		AllowMethods:     sliceutil.Unique(ch.allowMethods),
+		AllowHeaders:     sliceutil.Unique(ch.allowHeaders),
 		AllowCredentials: true,
-		ExposeHeaders:    sliceutil.Unique(ch.exposeHeaders...),
+		ExposeHeaders:    sliceutil.Unique(ch.exposeHeaders),
 		MaxAge:           ch.maxAge,
 	}
 }

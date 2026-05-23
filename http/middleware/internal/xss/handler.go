@@ -3,8 +3,10 @@ package xss
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log"
+	"log/slog"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -12,9 +14,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gomooth/pkg/http/xss"
+	"github.com/gomooth/xerror"
 	"github.com/microcosm-cc/bluemonday"
-	"github.com/save95/xerror"
 )
+
+const maxMultipartPartSize = 32 << 20 // 32MB
+
+const defaultMaxBodySize = 10 << 20 // 10MB
 
 type handler struct {
 	xssRuleItem
@@ -22,6 +28,7 @@ type handler struct {
 	debug             bool
 	trimSpaceEnabled  bool
 	passwordFieldName []string
+	maxBodySize       int64 // 请求体最大字节数，0 表示使用默认值
 
 	// 路由特殊规则
 	routePolicies map[string]*xssRuleItem
@@ -43,7 +50,8 @@ func New(opts ...Option) gin.HandlerFunc {
 		routePolicies: make(map[string]*xssRuleItem),
 		skipRoutes:    make(map[string]struct{}),
 	}
-	//xf.policy = xf.makePolicy(PolicyStrict)
+	// 默认启用严格策略，防止 XSS 注入。可通过 WithPolicy(PolicyNone) 显式关闭
+	xf.policy = xf.makePolicy(xss.PolicyStrict)
 
 	for _, opt := range opts {
 		opt(xf)
@@ -57,11 +65,11 @@ func (h *handler) makePolicy(p xss.Policy) *bluemonday.Policy {
 	case xss.PolicyNone:
 		return nil
 	case xss.PolicyStrict:
-		return bluemonday.StrictPolicy()
+		return xss.DefaultStrictPolicy()
 	case xss.PolicyUGC:
-		return bluemonday.UGCPolicy()
+		return xss.DefaultUGCPolicy()
 	default:
-		return bluemonday.StrictPolicy()
+		return xss.DefaultStrictPolicy()
 	}
 }
 
@@ -80,11 +88,20 @@ func (h *handler) makeSkipFields(fields []string) map[string]struct{} {
 	return vals
 }
 
+// matchRoute 检查请求路径是否匹配指定路由
+// 支持精确匹配和尾斜杠前缀匹配
+func matchRoute(requestPath, route string) bool {
+	if requestPath == route {
+		return true
+	}
+	return strings.HasPrefix(requestPath, route+"/")
+}
+
 func (h *handler) filter() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		// 指定了忽略路由，直接跳过
 		for u := range h.skipRoutes {
-			if strings.Contains(ctx.FullPath(), u) {
+			if matchRoute(ctx.FullPath(), u) {
 				h.debugf("xss handler hit skip route, skip\n")
 				ctx.Next()
 				return
@@ -95,7 +112,7 @@ func (h *handler) filter() gin.HandlerFunc {
 		if h.policy == nil {
 			skip := true
 			for u := range h.routePolicies {
-				if strings.Contains(ctx.FullPath(), u) {
+				if matchRoute(ctx.FullPath(), u) {
 					skip = false
 					break
 				}
@@ -114,24 +131,23 @@ func (h *handler) filter() gin.HandlerFunc {
 			err = h.filterQueryString(ctx)
 		case http.MethodPost, http.MethodPut, http.MethodPatch:
 			ct := ctx.Request.Header.Get("Content-Type")
-			switch ct {
+			mediaType, _, _ := mime.ParseMediaType(ct)
+			switch mediaType {
 			case "application/json":
 				err = h.filterJSON(ctx)
 			case "application/x-www-form-urlencoded":
 				err = h.filterFormData(ctx)
-			default:
-				if strings.Contains(ct, "multipart/form-data") {
-					err = h.filterMultiPartFormData(ctx)
-				}
+			case "multipart/form-data":
+				err = h.filterMultiPartFormData(ctx)
 			}
 		}
 
-		if nil != err {
+		if err != nil {
 			if xe, ok := err.(xerror.XError); ok {
 				err = xe.Unwrap()
 			}
-			log.Printf("xss handler err: %+v\n", err)
-			_ = ctx.AbortWithError(http.StatusBadRequest, err)
+			slog.Error("xss handler error", slog.String("component", "xss"), slog.String("error", err.Error()))
+			_ = ctx.AbortWithError(http.StatusBadRequest, fmt.Errorf("request content filtered"))
 			return
 		}
 
@@ -152,7 +168,7 @@ func (h *handler) filterXSS(fullPath, key, val string) string {
 	}
 
 	for route, item := range h.routePolicies {
-		if strings.Contains(fullPath, route) {
+		if matchRoute(fullPath, route) {
 			if _, ok := item.skipField[key]; ok {
 				h.debugf("xss handler hit route skip field, return origin value\n")
 				return val
@@ -194,9 +210,9 @@ func (h *handler) filterXSS(fullPath, key, val string) string {
 	return h.policy.Sanitize(val)
 }
 
-func (h *handler) debugf(format string, vals ...interface{}) {
+func (h *handler) debugf(format string, vals ...any) {
 	if h.debug {
-		log.Printf(format, vals...)
+		slog.Debug(fmt.Sprintf(format, vals...), slog.String("component", "xss"))
 	}
 }
 
@@ -226,27 +242,41 @@ func (h *handler) filterJSON(ctx *gin.Context) error {
 		return nil
 	}
 
-	d := json.NewDecoder(body)
+	maxSize := h.maxBodySize
+	if maxSize <= 0 {
+		maxSize = defaultMaxBodySize
+	}
+
+	// 限制读取大小，防止 OOM
+	bs, err := io.ReadAll(io.LimitReader(body, maxSize+1))
+	if err != nil {
+		return xerror.Wrap(err, "read body failed")
+	}
+	if int64(len(bs)) > maxSize {
+		return xerror.New("request body exceeds size limit")
+	}
+
+	d := json.NewDecoder(bytes.NewReader(bs))
 	d.UseNumber()
 
-	var val interface{}
-	if err := d.Decode(&val); nil != err {
+	var val any
+	if err := d.Decode(&val); err != nil {
 		return xerror.Wrap(err, "json decode failed")
 	}
 
 	h.debugf("xss handler input json: %s\n", val)
 
-	var data interface{}
+	var data any
 	switch val.(type) {
-	case map[string]interface{}:
-		vals := make(map[string]interface{}, 0)
-		for k, v := range val.(map[string]interface{}) {
+	case map[string]any:
+		vals := make(map[string]any, 0)
+		for k, v := range val.(map[string]any) {
 			vals[k] = h.filterJsonValue(ctx.FullPath(), k, v)
 		}
 		data = vals
-	case []interface{}:
-		vals := make([]interface{}, 0)
-		for _, v := range val.([]interface{}) {
+	case []any:
+		vals := make([]any, 0)
+		for _, v := range val.([]any) {
 			vals = append(vals, h.filterJsonValue(ctx.FullPath(), "", v))
 		}
 		data = vals
@@ -257,7 +287,7 @@ func (h *handler) filterJSON(ctx *gin.Context) error {
 	var bf bytes.Buffer
 	encode := json.NewEncoder(&bf)
 	encode.SetEscapeHTML(false)
-	if err := encode.Encode(data); nil != err {
+	if err := encode.Encode(data); err != nil {
 		return xerror.Wrap(err, "json encode failed")
 	}
 
@@ -266,17 +296,17 @@ func (h *handler) filterJSON(ctx *gin.Context) error {
 	return nil
 }
 
-func (h *handler) filterJsonValue(fullPath, key string, val interface{}) interface{} {
+func (h *handler) filterJsonValue(fullPath, key string, val any) any {
 	switch val.(type) {
-	case map[string]interface{}:
-		vals := make(map[string]interface{}, 0)
-		for k, v := range val.(map[string]interface{}) {
+	case map[string]any:
+		vals := make(map[string]any, 0)
+		for k, v := range val.(map[string]any) {
 			vals[k] = h.filterJsonValue(fullPath, key, v)
 		}
 		return vals
-	case []interface{}:
-		vals := make([]interface{}, 0)
-		for _, v := range val.([]interface{}) {
+	case []any:
+		vals := make([]any, 0)
+		for _, v := range val.([]any) {
 			vals = append(vals, h.filterJsonValue(fullPath, key, v))
 		}
 		return vals
@@ -293,10 +323,19 @@ func (h *handler) filterFormData(ctx *gin.Context) error {
 		return nil
 	}
 
-	// https://golang.org/src/net/http/httputil/dump.go
+	maxSize := h.maxBodySize
+	if maxSize <= 0 {
+		maxSize = defaultMaxBodySize
+	}
+
+	// 限制读取大小，防止 OOM
 	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(body); err != nil {
+	n, err := buf.ReadFrom(io.LimitReader(body, maxSize+1))
+	if err != nil {
 		return xerror.Wrap(err, "read from failed")
+	}
+	if n > maxSize {
+		return xerror.New("request body exceeds size limit")
 	}
 
 	h.debugf("xss handler input x-form-data: %s\n", buf.String())
@@ -308,9 +347,9 @@ func (h *handler) filterFormData(ctx *gin.Context) error {
 
 	var bf bytes.Buffer
 	for key, v := range m {
-		val := url.QueryEscape(v[0])
-		if _, ok := h.skipField[key]; !ok {
-			val = url.QueryEscape(h.filterXSS(ctx.FullPath(), key, v[0]))
+		var filteredVals []string
+		for _, item := range v {
+			filteredVals = append(filteredVals, url.QueryEscape(h.filterXSS(ctx.FullPath(), key, item)))
 		}
 
 		if bf.Len() > 0 {
@@ -318,7 +357,7 @@ func (h *handler) filterFormData(ctx *gin.Context) error {
 		}
 		bf.WriteString(key)
 		bf.WriteByte('=')
-		bf.WriteString(val)
+		bf.WriteString(strings.Join(filteredVals, "&"+key+"="))
 	}
 
 	h.debugf("xss handler output x-form-data: %s\n", bf.String())
@@ -333,7 +372,14 @@ func (h *handler) filterMultiPartFormData(ctx *gin.Context) error {
 	}
 
 	ct := ctx.Request.Header.Get("Content-Type")
-	boundary := ct[strings.Index(ct, "boundary=")+9:]
+	_, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return xerror.Wrap(err, "parse content-type failed")
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return xerror.New("multipart: missing boundary in Content-Type")
+	}
 	reader := multipart.NewReader(body, boundary)
 
 	h.debugf("xss handler enter multi-part-form-data\n")
@@ -353,9 +399,12 @@ func (h *handler) filterMultiPartFormData(ctx *gin.Context) error {
 		//val := make([]byte, 0)
 		//_, err = part.Read(val)
 		var buf bytes.Buffer
-		_, err = io.Copy(&buf, part)
-		if nil != err {
+		n, err := io.CopyN(&buf, part, maxMultipartPartSize+1)
+		if err != nil && err != io.EOF {
 			return xerror.Wrap(err, "copy body failed")
+		}
+		if n > maxMultipartPartSize {
+			return xerror.New("multipart part size exceeds limit")
 		}
 		val := buf.String()
 

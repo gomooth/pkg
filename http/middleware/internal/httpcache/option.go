@@ -1,15 +1,15 @@
 package httpcache
 
 import (
+	"log/slog"
 	"time"
 
-	"github.com/gomooth/pkg/http/jwt"
+	"github.com/gin-gonic/gin"
 	"github.com/gomooth/pkg/http/middleware/internal/httpcache/store"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/gomooth/utils/sliceutil"
-	"github.com/save95/xlog"
 )
 
 type Option func(*handler)
@@ -17,7 +17,7 @@ type Option func(*handler)
 func WithRedisStoreBy(addr string, db uint) Option {
 	return func(c *handler) {
 		if len(addr) != 0 {
-			c.store = store.NewRedisStore(redis.NewClient(&redis.Options{
+			c.store = store.NewOwnedRedisStore(redis.NewClient(&redis.Options{
 				Network: "tcp",
 				Addr:    addr,
 				DB:      int(db),
@@ -34,7 +34,7 @@ func WithRedisStore(client *redis.Client) Option {
 	}
 }
 
-func WithLogger(log xlog.XLogger) Option {
+func WithLogger(log *slog.Logger) Option {
 	return func(c *handler) {
 		c.log = log
 	}
@@ -46,9 +46,10 @@ func WithDebug(enabled bool) Option {
 	}
 }
 
-func WithJWTOption(opt *jwt.Option) Option {
+// WithUserIDFunc 设置从请求上下文提取用户 ID 的回调函数，用于 withToken 路由构建用户级缓存 key。
+func WithUserIDFunc(fn func(*gin.Context) (uint, error)) Option {
 	return func(c *handler) {
-		c.jwtOption = opt
+		c.userIDFunc = fn
 	}
 }
 
@@ -94,6 +95,14 @@ func WithoutResponseHeader(without bool) Option {
 	}
 }
 
+// WithSingleFlightTimeout 设置 singleflight 的超时时间。
+// 默认 10ms（约 100QPS）。设为 0 禁用 singleflight 自动 Forget。
+func WithSingleFlightTimeout(d time.Duration) Option {
+	return func(c *handler) {
+		c.singleFlightTimeout = d
+	}
+}
+
 // WithRoutePolicy 路由策略
 func WithRoutePolicy(route string, withToken bool, fields ...string) Option {
 	return withRouteRule(route, withToken, 0, fields, nil, nil)
@@ -118,7 +127,7 @@ func withRouteRule(route string, withToken bool, duration time.Duration, fields,
 	return func(c *handler) {
 		// 先记录顺序
 		c.routeList = append(c.routeList, route)
-		c.routeList = sliceutil.Unique(c.routeList...)
+		c.routeList = sliceutil.Unique(c.routeList)
 
 		if c.routePolicies == nil {
 			c.routePolicies = make(map[string]*ruleItem, 0)

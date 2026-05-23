@@ -2,82 +2,105 @@ package httpsqsconsumer
 
 import (
 	"context"
+	"log/slog"
+	"sync"
 	"time"
 
+	"github.com/gomooth/httpsqs"
 	"github.com/gomooth/pkg/framework/logger"
+	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/queue"
-
-	"github.com/save95/xerror"
-	"github.com/save95/xlog"
 )
 
+// httpsqsFetcher 从 HTTPSQS 获取消息，实现 queue.Fetcher 接口
+type httpsqsFetcher struct {
+	client    httpsqs.IClient
+	queueName string
+
+	mu      sync.Mutex
+	lastPos int64
+}
+
+// LastPos 返回最后一次 Fetch 获取的消息位置
+func (f *httpsqsFetcher) LastPos() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastPos
+}
+
+func (f *httpsqsFetcher) Fetch(ctx context.Context) (string, error) {
+	str, pos, err := f.client.Get(ctx, f.queueName)
+	if err != nil {
+		return "", err
+	}
+	if pos == -1 {
+		return "", nil
+	}
+	f.mu.Lock()
+	f.lastPos = pos
+	f.mu.Unlock()
+	return str, nil
+}
+
+func (f *httpsqsFetcher) Close() error { return nil }
+
+// consumer HTTPSQS 消费者，嵌入 BaseConsumer 复用消费循环
 type consumer struct {
-	log xlog.XLogger
-
-	handler  IHandler
-	maxRetry uint
+	*queue.BaseConsumer
 }
 
-func New(opts ...func(consumer *consumer)) queue.IConsumer {
-	c := &consumer{
-		log: logger.NewConsoleLogger(),
-	}
-
+// New 创建 HTTPSQS 消费者
+func New(opts ...func(*consumerOptions)) queue.IConsumer {
+	o := defaultConsumerOptions()
 	for _, opt := range opts {
-		opt(c)
+		opt(o)
 	}
 
-	return c
+	baseOpts := []queue.BaseConsumerOption{
+		queue.WithConsumerLogger(o.log),
+		queue.WithConsumerBackoff(o.backoff),
+		queue.WithConsumerEmptyQueueSleep(o.emptyQueueSleep),
+		queue.WithConsumerFailedCallbackDelay(o.failedCallbackDelay),
+	}
+
+	// 如果设置了 IHandler，构建 httpsqsHandler 适配器和 httpsqsFetcher
+	if o.handler != nil {
+		client, err := o.handler.GetClient()
+		if err == nil {
+			fetcher := &httpsqsFetcher{
+				client:    client,
+				queueName: o.handler.QueueName(),
+			}
+			handler := &httpsqsHandler{
+				inner:   o.handler,
+				fetcher: fetcher,
+			}
+			baseOpts = append(baseOpts,
+				queue.WithConsumerHandler(handler),
+				queue.WithConsumerFetcher(fetcher),
+			)
+		}
+	}
+
+	return &consumer{
+		BaseConsumer: queue.NewBaseConsumer(baseOpts...),
+	}
 }
 
-func (s *consumer) Consume(ctx context.Context) error {
-	if s.handler == nil {
-		return xerror.New("no httpsqs handler")
-	}
+// consumerOptions HTTPSQS 消费者配置
+type consumerOptions struct {
+	log                 *slog.Logger
+	handler             IHandler
+	backoff             retry.BackoffStrategy
+	emptyQueueSleep     time.Duration
+	failedCallbackDelay time.Duration
+}
 
-	client, err := s.handler.GetClient()
-	if nil != err {
-		return xerror.Wrap(err, "get httpsqs client failed")
-	}
-
-	queueName := s.handler.QueueName()
-	s.log.Debugf("[httpsqs] %s consumer, start", queueName)
-	defer func() {
-		s.log.Debugf("[httpsqs] %s consumer, end", queueName)
-	}()
-
-	for {
-		if err := s.handler.OnBefore(ctx); nil != err {
-			sleep := 2 << s.maxRetry
-			s.maxRetry++
-			s.log.Errorf("[httpsqs] %s onBefore failed, sleep %d minute: %+v", queueName, sleep, err)
-			time.Sleep(time.Duration(sleep) * time.Minute)
-			continue
-		}
-
-		str, pos, err := client.Get(ctx, queueName)
-		if nil != err {
-			s.log.Errorf("[httpsqs] %s get queue item failed: %+v", queueName, err)
-			continue
-		}
-		// 消费完则跳过
-		if pos == -1 {
-			time.Sleep(time.Minute)
-			continue
-		}
-		// 空数据
-		if len(str) == 0 {
-			time.Sleep(3 * time.Second)
-			continue
-		}
-
-		// 处理数据
-		if err := s.handler.Handle(ctx, str, pos); nil != err {
-			go func() {
-				time.Sleep(3 * time.Second)
-
-				s.handler.OnFailed(ctx, str, err)
-			}()
-		}
+func defaultConsumerOptions() *consumerOptions {
+	return &consumerOptions{
+		log:                 logger.NewConsoleLogger(),
+		backoff:             &retry.ExponentialDelay{Base: time.Minute, Max: 24 * time.Hour},
+		emptyQueueSleep:     time.Minute,
+		failedCallbackDelay: 3 * time.Second,
 	}
 }

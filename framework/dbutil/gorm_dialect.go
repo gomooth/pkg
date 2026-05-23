@@ -3,7 +3,7 @@ package dbutil
 import (
 	"strings"
 
-	"github.com/save95/xerror"
+	"github.com/gomooth/xerror"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"

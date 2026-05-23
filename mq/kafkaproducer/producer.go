@@ -2,27 +2,46 @@ package kafkaproducer
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/gomooth/pkg/framework/logger"
+	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/xcode"
 
-	"github.com/save95/xerror"
-	"github.com/save95/xlog"
+	"github.com/gomooth/xerror"
 
 	"github.com/IBM/sarama"
+	"go.opentelemetry.io/otel/metric"
 )
+
+var kafkaProducerMeter = metrics.GetProvider().Meter("kafka")
+
+var (
+	kafkaProduceCounter = kafkaProducerMeter.Int64Counter("kafka.produce.count")
+	kafkaProduceErrors  = kafkaProducerMeter.Int64Counter("kafka.produce.errors")
+)
+
+func recordKafkaProduce(ctx context.Context, topic string) {
+	kafkaProduceCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("topic", topic)))
+}
+
+func recordKafkaProduceError(ctx context.Context, topic string) {
+	kafkaProduceErrors.Add(ctx, 1, metric.WithAttributes(metrics.Attr("topic", topic)))
+}
 
 type producer struct {
 	brokers []string
 	timeout time.Duration
 
-	logger xlog.XLogger
+	logger *slog.Logger
 
-	saramaConfig *sarama.Config
-	once         sync.Once
-	producer     sarama.SyncProducer
+	saramaConfig  *sarama.Config
+	mu            sync.Mutex
+	producer      sarama.SyncProducer // 使用同步生产者，优先保证消息可靠性；高吞吐量场景可改用 sarama.AsyncProducer
+	producerReady bool
 }
 
 func New(brokers []string, opts ...func(*producer)) IProducer {
@@ -51,7 +70,7 @@ func (b *producer) Produces(ctx context.Context, topic string, message ...[]byte
 // sequenceKey 顺序性特定KEY。如 kafka 为 partition key
 func (b *producer) ProduceWithSequence(ctx context.Context, topic, sequenceKey string, messages ...[]byte) error {
 	if len(messages) == 0 {
-		return xerror.New("no message")
+		return xerror.NewXCode(xcode.ErrMQPublish, "no message")
 	}
 
 	msgs := make([]*sarama.ProducerMessage, 0, len(messages))
@@ -60,11 +79,6 @@ func (b *producer) ProduceWithSequence(ctx context.Context, topic, sequenceKey s
 			Topic: topic,
 			Key:   sarama.StringEncoder(sequenceKey),
 			Value: sarama.ByteEncoder(message),
-			//Headers:   nil,
-			//Metadata:  nil,
-			//Offset:    0,
-			//Partition: 0,
-			//Timestamp: time.Time{},
 		})
 	}
 
@@ -85,13 +99,17 @@ func (b *producer) getSaramaConfig() *sarama.Config {
 		return b.saramaConfig
 	}
 
-	hostname, _ := os.Hostname()
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
 
 	conf := sarama.NewConfig()
 
 	// client common config
 	conf.Version = sarama.V3_6_0_0
 	conf.ClientID = hostname
+	conf.Net.DialTimeout = b.timeout
 
 	// producer config
 	conf.Producer.RequiredAcks = sarama.WaitForAll
@@ -103,35 +121,54 @@ func (b *producer) getSaramaConfig() *sarama.Config {
 	conf.Producer.Partitioner = sarama.NewRoundRobinPartitioner
 	conf.Producer.Transaction.Retry.Backoff = 10
 
-	// 日志收集
-	sarama.Logger = newSaramaLogger(b.logger)
+	// 日志收集（仅首次设置，避免多实例覆盖）
+	initSaramaLogger(b.logger)
 
 	return conf
 }
 
-func (b *producer) getProducer() sarama.SyncProducer {
-	if b.producer != nil {
-		return b.producer
+func (b *producer) getProducer() (sarama.SyncProducer, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.producerReady && b.producer != nil {
+		return b.producer, nil
 	}
 
-	b.once.Do(func() {
-		if b.producer == nil {
-			if p, err := sarama.NewSyncProducer(b.brokers, b.getSaramaConfig()); err != nil {
-				b.logger.Errorf("producer create failed: %v", err)
-			} else {
-				b.producer = p
-			}
-		}
-	})
+	p, err := sarama.NewSyncProducer(b.brokers, b.getSaramaConfig())
+	if err != nil {
+		b.logger.Error("producer create failed", slog.String("component", "kafkaproducer"), slog.Any("error", err))
+		return nil, err
+	}
 
-	return b.producer
+	b.producer = p
+	b.producerReady = true
+	return b.producer, nil
 }
 
-func (b *producer) sends(_ context.Context, msgs ...*sarama.ProducerMessage) error {
-	p := b.getProducer()
-	if nil == p {
-		return xerror.New("no producer found")
+func (b *producer) sends(ctx context.Context, msgs ...*sarama.ProducerMessage) error {
+	// 检查 context 是否已取消，避免无效的发送尝试
+	if err := ctx.Err(); err != nil {
+		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
-	return p.SendMessages(msgs)
+	p, err := b.getProducer()
+	if err != nil {
+		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
+	}
+
+	err = p.SendMessages(msgs)
+	if err != nil {
+		for _, msg := range msgs {
+			recordKafkaProduceError(ctx, msg.Topic)
+		}
+		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
+	}
+
+	// 记录发送成功指标
+	for _, msg := range msgs {
+		recordKafkaProduce(ctx, msg.Topic)
+	}
+
+	return nil
 }

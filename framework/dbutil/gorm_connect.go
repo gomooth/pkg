@@ -1,19 +1,45 @@
 package dbutil
 
 import (
-	"strings"
+	"context"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
+	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/xerror"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-type dbFunc func() (*gorm.DB, error)
-
 // 利用该结构减少并发锁竞争
 var dbRelation sync.Map
+
+type dbHolder struct {
+	mu    sync.Mutex
+	db    *gorm.DB
+	err   error
+	ready bool
+}
+
+// isHealthy 检查连接是否可用。
+// 注意：此方法不再要求调用方持有锁，Ping 网络操作在锁外执行。
+func (h *dbHolder) isHealthy() bool {
+	h.mu.Lock()
+	if !h.ready || h.db == nil {
+		h.mu.Unlock()
+		return false
+	}
+	db := h.db
+	h.mu.Unlock()
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return false
+	}
+	return sqlDB.Ping() == nil
+}
 
 // 获取db
 func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, error) {
@@ -35,12 +61,12 @@ func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, erro
 	// 连接 db
 	db, err := gorm.Open(dialect, opt)
 	if err != nil {
-		return nil, errors.Wrap(err, "db连接异常")
+		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return nil, errors.Wrap(err, "db连接异常")
+		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
 	}
 
 	if cnf != nil {
@@ -58,21 +84,24 @@ func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, erro
 	return db, nil
 }
 
-// Connect 获取db
-func Connect(option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+// ConnectWithContext 通过 context 获取数据库连接
+func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
 	if option == nil {
-		return nil, errors.New("db connect option empty")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db connect option empty")
 	}
 	if option.Name == "" {
-		return nil, errors.New("the db config name invalid")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "the db config name invalid")
 	}
 	if option.Config == nil {
-		return nil, errors.New("db config empty")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db config empty")
 	}
-	if len(option.Config.Driver) == 0 || len(option.Config.Dsn) == 0 ||
-		!strings.Contains(option.Config.Dsn, ":") ||
-		!strings.Contains(option.Config.Dsn, "@") {
-		return nil, errors.New("db config invalid")
+	if len(option.Config.Driver) == 0 || len(option.Config.Dsn) == 0 {
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db config invalid")
+	}
+
+	// 检查 context 是否已取消
+	if err := ctx.Err(); err != nil {
+		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
 	}
 
 	opt := new(connectOption)
@@ -80,51 +109,120 @@ func Connect(option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, err
 		builder(opt)
 	}
 
-	var (
-		db  *gorm.DB
-		err error
+	actual, _ := dbRelation.LoadOrStore(option.Name, &dbHolder{})
+	holder := actual.(*dbHolder)
 
-		// 用于只初始化一次
-		wg sync.WaitGroup
-	)
-	wg.Add(1)
-	fi, loaded := dbRelation.LoadOrStore(option.Name, dbFunc(func() (*gorm.DB, error) {
-		// 阻塞直到初始化完成
-		wg.Wait()
-		return db, err
-	}))
+	holder.mu.Lock()
 
-	// 已经存在，则直接调用即可
-	if loaded {
-		return fi.(dbFunc)()
+	if holder.ready {
+		// 快速路径：在锁内读取 DB 引用，释放锁后再 Ping
+		db := holder.db
+		holder.mu.Unlock()
+
+		if holder.isHealthy() {
+			return db, nil
+		}
+
+		// Ping 失败，重新加锁重置状态
+		holder.mu.Lock()
+		if holder.ready {
+			holder.ready = false
+			holder.db = nil
+			holder.err = nil
+		}
 	}
+	defer holder.mu.Unlock()
 
-	// 配置转成方言
 	dialect := opt.gormDialect
 	if dialect == nil {
 		v, err := toDialect(option.Config.Driver, option.Config.Dsn)
-		if nil != err {
+		if err != nil {
+			holder.err = err
 			return nil, err
 		}
 		dialect = v
 	}
 
-	// 未找到则需要初始化
-	db, err = connectWithoutCache(dialect, option)
+	// 再次检查 context（可能在等待锁时被取消）
+	if err := ctx.Err(); err != nil {
+		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
+	}
 
-	// 真实的返回db函数，wg释放后
-	f := dbFunc(func() (*gorm.DB, error) {
-		return db, err
-	})
+	holder.db, holder.err = connectWithoutCache(dialect, option)
+	if holder.err == nil {
+		holder.ready = true
+	}
 
-	wg.Done()
-	// 重置函数
-	dbRelation.Store(option.Name, f)
-	return db, err
+	return holder.db, holder.err
+}
+
+// Connect 获取数据库连接
+func Connect(option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+	return ConnectWithContext(context.Background(), option, optBuilders...)
+}
+
+// ConnectWithReconnect 强制重建数据库连接（即使缓存连接存在）。
+// 当检测到连接断开时可使用此函数。
+func ConnectWithReconnect(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+	if option == nil {
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db connect option empty")
+	}
+
+	// 先清理旧连接
+	if err := Close(option.Name); err != nil {
+		slog.Warn("dbutil: failed to close old connection before reconnect", slog.String("component", "dbutil"), slog.String("name", option.Name), slog.String("error", err.Error()))
+	}
+
+	return ConnectWithContext(ctx, option, optBuilders...)
 }
 
 // ConnectWith 通过方言获取db
 // Deprecated Use Connect(option, ConnectWithGORMDialector(dialect))
 func ConnectWith(dialect gorm.Dialector, option *Option) (*gorm.DB, error) {
 	return Connect(option, ConnectWithGORMDialector(dialect))
+}
+
+// Close 关闭并移除指定名称的数据库连接
+func Close(name string) error {
+	val, ok := dbRelation.LoadAndDelete(name)
+	if !ok {
+		return xerror.NewXCode(xcode.ErrDBConnect, fmt.Sprintf("db connection %q not found", name))
+	}
+
+	holder := val.(*dbHolder)
+	holder.mu.Lock()
+	defer holder.mu.Unlock()
+
+	if holder.db != nil {
+		sqlDB, err := holder.db.DB()
+		if err != nil {
+			return err
+		}
+		return sqlDB.Close()
+	}
+	return nil
+}
+
+// CloseAll 关闭并移除所有数据库连接
+func CloseAll() error {
+	var firstErr error
+	dbRelation.Range(func(key, value any) bool {
+		holder := value.(*dbHolder)
+		holder.mu.Lock()
+		if holder.db != nil {
+			sqlDB, err := holder.db.DB()
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if err == nil {
+				if closeErr := sqlDB.Close(); closeErr != nil && firstErr == nil {
+					firstErr = closeErr
+				}
+			}
+		}
+		holder.mu.Unlock()
+		dbRelation.Delete(key)
+		return true
+	})
+	return firstErr
 }

@@ -1,119 +1,45 @@
 package console
 
 import (
-	"context"
-	"log"
-	"strings"
+	"log/slog"
+	"os"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
+
+	"github.com/gomooth/pkg/framework/logger/internal/multihandler"
+	"github.com/gomooth/pkg/framework/logger/internal/sampling"
+	"github.com/gomooth/pkg/framework/logger/internal/trace"
 	"github.com/gomooth/pkg/framework/logger/internal/types"
-
-	"github.com/save95/xlog"
 )
 
-type logger struct {
-	fields xlog.Fields
-}
-
-func New() xlog.XLogger {
-	l := &logger{}
-
-	return l
-}
-
-func (l *logger) prefix(ctx context.Context) string {
-	args := make([]string, 0)
-	traceText := types.ParseTrace(ctx)
-	if len(traceText) > 0 {
-		args = append(args, traceText)
-	}
-	fields := types.ParseField(l.fields)
-	if len(fields) > 0 {
-		args = append(args, fields)
+// New 创建控制台日志器，可选配置 OTel LoggerProvider 启用 OTLP 日志导出。
+func New(opts ...func(*types.Option)) *slog.Logger {
+	cnf := types.DefaultOption()
+	for _, opt := range opts {
+		opt(cnf)
 	}
 
-	prefix := strings.Join(args, " ")
-	if len(prefix) > 0 {
-		prefix += "\t"
+	var handler slog.Handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: cnf.Level,
+	})
+
+	// 采样（在 trace.Injector 之前，避免对将被丢弃的日志注入 trace）
+	if cnf.Sampling != nil && len(cnf.Sampling.LevelRates) > 0 {
+		handler = sampling.New(handler, sampling.Config{
+			LevelRates:      cnf.Sampling.LevelRates,
+			BurstMultiplier: cnf.Sampling.BurstMultiplier,
+			SummaryInterval: cnf.Sampling.SummaryInterval,
+		})
 	}
-	return prefix
-}
 
-func (l *logger) Debug(args ...interface{}) {
-	args = append([]interface{}{l.prefix(nil)}, args...)
-	log.Print(args...)
-}
+	// 注入 trace_id / span_id
+	handler = &trace.Injector{Next: handler}
 
-func (l *logger) Info(args ...interface{}) {
-	args = append([]interface{}{l.prefix(nil)}, args...)
-	log.Print(args...)
-}
-
-func (l *logger) Warning(args ...interface{}) {
-	args = append([]interface{}{l.prefix(nil)}, args...)
-	log.Print(args...)
-}
-
-func (l *logger) Error(args ...interface{}) {
-	args = append([]interface{}{l.prefix(nil)}, args...)
-	log.Print(args...)
-}
-
-func (l *logger) Debugf(format string, args ...interface{}) {
-	format = l.prefix(nil) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) Infof(format string, args ...interface{}) {
-	format = l.prefix(nil) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) Warningf(format string, args ...interface{}) {
-	format = l.prefix(nil) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) Errorf(format string, args ...interface{}) {
-	format = l.prefix(nil) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) Debugc(ctx context.Context, format string, args ...interface{}) {
-	format = l.prefix(ctx) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) Infoc(ctx context.Context, format string, args ...interface{}) {
-	format = l.prefix(ctx) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) Warningc(ctx context.Context, format string, args ...interface{}) {
-	format = l.prefix(ctx) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) Errorc(ctx context.Context, format string, args ...interface{}) {
-	format = l.prefix(ctx) + format
-	log.Printf(format, args...)
-}
-
-func (l *logger) WithField(key string, value interface{}, options ...interface{}) xlog.XLog {
-	nl := *l
-	if nl.fields == nil {
-		nl.fields = make(xlog.Fields)
+	// OTLP 日志导出（opt-in）
+	if cnf.OTelLoggerProvider != nil {
+		otelHandler := otelslog.NewHandler("pkg/console", otelslog.WithLoggerProvider(cnf.OTelLoggerProvider))
+		handler = multihandler.New(handler, otelHandler)
 	}
-	nl.fields[key] = value
-	return &nl
-}
 
-func (l *logger) WithFields(fields xlog.Fields, options ...interface{}) xlog.XLog {
-	nl := *l
-	if nl.fields == nil {
-		nl.fields = make(xlog.Fields)
-	}
-	for k, v := range fields {
-		nl.fields[k] = v
-	}
-	return &nl
+	return slog.New(handler)
 }

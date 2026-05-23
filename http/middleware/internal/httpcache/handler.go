@@ -2,7 +2,9 @@ package httpcache
 
 import (
 	"bytes"
-	"log"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -10,10 +12,20 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/http/jwt"
+	"github.com/gomooth/pkg/framework/metrics"
 	"github.com/gomooth/pkg/http/middleware/internal/httpcache/store"
-	"github.com/save95/xerror"
-	"github.com/save95/xlog"
+	"github.com/gomooth/xerror"
+
+	"go.opentelemetry.io/otel/metric"
+)
+
+var httpCacheMeter = metrics.GetProvider().Meter("httpcache")
+
+var (
+	httpCacheHitCounter    = httpCacheMeter.Int64Counter("httpcache.hit")
+	httpCacheMissCounter   = httpCacheMeter.Int64Counter("httpcache.miss")
+	httpCacheWriteCounter  = httpCacheMeter.Int64Counter("httpcache.write")
+	httpCacheErrorCounter  = httpCacheMeter.Int64Counter("httpcache.error")
 )
 
 type handler struct {
@@ -21,10 +33,10 @@ type handler struct {
 	singleFlightTimeout   time.Duration
 	withoutResponseHeader bool
 	prefixKey             string
-	log                   xlog.XLogger
+	log                   *slog.Logger
 
-	store     store.ICacheStore
-	jwtOption *jwt.Option
+	store      store.ICacheStore
+	userIDFunc func(*gin.Context) (uint, error) // 从请求上下文提取用户 ID，替代直接依赖 jwt
 
 	globalCacheDuration    time.Duration
 	globalHeaderKeys       []string            // 用于计算缓存的 header
@@ -36,6 +48,13 @@ type handler struct {
 }
 
 func New(opts ...Option) gin.HandlerFunc {
+	h, _ := NewWithCloser(opts...)
+	return h
+}
+
+// NewWithCloser 创建 httpcache 中间件，同时返回一个关闭函数。
+// 关闭函数会释放 store 持有的资源（如内部创建的 Redis 连接），应在应用关闭时调用。
+func NewWithCloser(opts ...Option) (gin.HandlerFunc, func() error) {
 	f := &handler{
 		globalCacheDuration: 5 * time.Minute,
 		globalHeaderKeys:    make([]string, 0),
@@ -49,11 +68,12 @@ func New(opts ...Option) gin.HandlerFunc {
 		opt(f)
 	}
 
-	return func(c *gin.Context) {
+	handlerFunc := func(c *gin.Context) {
 		strategy, err := f.getCacheStrategy(c)
-		if nil != err {
+		if err != nil {
+			slog.Error("get http cache strategy failed", slog.String("component", "httpcache"), slog.String("error", err.Error()))
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"message": "get http cache strategy failed: " + err.Error(),
+				"message": "internal cache error",
 			})
 			return
 		}
@@ -69,9 +89,10 @@ func New(opts ...Option) gin.HandlerFunc {
 		}
 
 		cached, respCache, err := f.cached(c, strategy)
-		if nil != err {
+		if err != nil {
+			slog.Error("http cache handle failed", slog.String("component", "httpcache"), slog.String("error", err.Error()))
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"message": "http cache handle failed: " + err.Error(),
+				"message": "internal cache error",
 			})
 			return
 		}
@@ -92,8 +113,9 @@ func New(opts ...Option) gin.HandlerFunc {
 		}
 
 		if _, err := c.Writer.Write(respCache.Data); err != nil {
+			slog.Error("http cache write response failed", slog.String("component", "httpcache"), slog.String("error", err.Error()))
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"message": "http cache handle failed: " + err.Error(),
+				"message": "internal cache error",
 			})
 			return
 		}
@@ -101,6 +123,15 @@ func New(opts ...Option) gin.HandlerFunc {
 		// 跳出，不走后续的中间件
 		c.Abort()
 	}
+
+	closeFn := func() error {
+		if closer, ok := f.store.(io.Closer); ok {
+			return closer.Close()
+		}
+		return nil
+	}
+
+	return handlerFunc, closeFn
 }
 
 func (h *handler) getCacheStrategy(ctx *gin.Context) (*strategy, error) {
@@ -155,12 +186,16 @@ func (h *handler) getCacheStrategy(ctx *gin.Context) (*strategy, error) {
 
 	var userID uint
 	if rule.withToken {
-		user, err := jwt.MustParseJWTUser(ctx, h.jwtOption)
-		if nil != err {
-			h.debugf("parse jwt user failed, err=%+v", err)
-			return nil, xerror.Wrap(err, "parse jwt user failed")
+		if h.userIDFunc == nil {
+			h.debugf("withToken enabled but userIDFunc not set")
+			return nil, xerror.New("httpcache: withToken requires userIDFunc")
 		}
-		userID = user.GetID()
+		uid, err := h.userIDFunc(ctx)
+		if err != nil {
+			h.debugf("get user id failed, err=%+v", err)
+			return nil, xerror.Wrap(err, "get user id failed")
+		}
+		userID = uid
 	}
 
 	cacheKey := ctx.Request.URL.Path + ":" + params.Encode()
@@ -187,17 +222,17 @@ func (h *handler) debugf(format string, vals ...interface{}) {
 	}
 
 	if h.log != nil {
-		h.log.Debugf("[httpcache] "+format, vals...)
+		h.log.Debug(fmt.Sprintf("[httpcache] "+format, vals...), slog.String("component", "httpcache"))
 		return
 	}
 
-	log.Printf("[httpcache] "+format+"\n", vals...)
+	slog.Debug(fmt.Sprintf("[httpcache] "+format, vals...), slog.String("component", "httpcache"))
 }
 
 func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.CachedResponse, error) {
 	cacheKey := h.getCacheKey(strategy.CacheKey)
 
-	data, err, _ := sf.Do(cacheKey, func() (interface{}, error) {
+	data, err, _ := sf.Do(cacheKey, func() (any, error) {
 		// 限制 QPS = 1s/h.singleFlightTimeout
 		if h.singleFlightTimeout > 0 {
 			timer := time.AfterFunc(h.singleFlightTimeout, func() {
@@ -208,15 +243,19 @@ func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.Cache
 
 		// 先获取缓存
 		respCache := store.CachedResponse{}
-		err := h.store.Get(cacheKey, &respCache)
+		err := h.store.Get(c.Request.Context(), cacheKey, &respCache)
 		if err == nil {
 			h.debugf("hit cache, key=%s", cacheKey)
+			httpCacheHitCounter.Add(c.Request.Context(), 1)
 			return &respCache, nil
 		}
 
 		if err != store.ErrorCacheMiss {
+			httpCacheErrorCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("phase", "get")))
 			return nil, xerror.Wrapf(err, "get http cache failed, key=%s", cacheKey)
 		}
+
+		httpCacheMissCounter.Add(c.Request.Context(), 1)
 
 		// 未获取到缓存，调用下一个请求链
 		// 将自定义的响应写入器传递给 Gin 的下一个处理器，便于复制和缓存 response
@@ -232,16 +271,19 @@ func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.Cache
 
 		// 保存缓存
 		resp := newCachedResponse(cacheWriter)
-		if err := h.store.Set(cacheKey, resp, strategy.CacheDuration); err != nil {
+		if err := h.store.Set(c.Request.Context(), cacheKey, resp, strategy.CacheDuration); err != nil {
+			httpCacheErrorCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("phase", "set")))
+			httpCacheWriteCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("result", "failure")))
 			return nil, xerror.Wrapf(err, "set http cache failed, key=%s", cacheKey)
 		}
+		httpCacheWriteCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("result", "success")))
 
 		// 从请求链中获取的数据，直接跳过。防止响应重复
 		h.debugf("not cache, save cache and redirect next, key=%s", cacheKey)
 		return nil, nil
 	})
 
-	if nil != err {
+	if err != nil {
 		// 非 debug 模式，不阻塞
 		if !h.debug {
 			return false, nil, nil

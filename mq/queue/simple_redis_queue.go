@@ -9,6 +9,25 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// popLuaScript 原子性 Pop 脚本：先从 backup 列表取数据，backup 为空则从主队列阻塞取并写入 backup
+// 使用 BLMOVE 替代已废弃的 BRPOPLPUSH（Redis 6.2+ 废弃）
+var popLuaScript = redis.NewScript(`
+local backup_key = KEYS[2]
+local main_key = KEYS[1]
+local timeout = tonumber(ARGV[1])
+
+-- 先尝试从 backup 获取
+local bak = redis.call('RPOP', backup_key)
+if bak then
+    return bak
+end
+
+-- backup 为空，从主队列阻塞获取
+-- BLMOVE source destination LEFT RIGHT timeout 等价于 BRPOPLPUSH source destination timeout
+local result = redis.call('BLMOVE', main_key, backup_key, 'LEFT', 'RIGHT', timeout)
+return result
+`)
+
 type queue struct {
 	name        string
 	timeout     time.Duration
@@ -45,39 +64,31 @@ func NewSimpleRedis(cnf *RedisQueueConfig, name string) IQueue {
 
 func (q *queue) Push(ctx context.Context, value string) error {
 	_, err := q.redisClient.LPush(ctx, q.name, value).Result()
-	if nil != err {
-		return err
-	}
-
-	// 推送完成就立即释放，防止占用过多的链接
-	_ = q.redisClient.Close()
-
 	return err
 }
 
 func (q *queue) Pop(ctx context.Context) (string, error) {
-	// 先从备份 List 获取数据（保证消息的可靠性）
-	bak, err := q.redisClient.RPop(ctx, q.backupName()).Result()
-	if nil != err {
-		if errors.Is(err, redis.Nil) {
-			return "", nil
-		}
-		return "", err
-	}
-	if len(bak) > 0 {
-		return bak, nil
-	}
-
-	// 取出数据，并写入备份 List，防止当机丢失数据
-	str, err := q.redisClient.BRPopLPush(ctx, q.name, q.backupName(), q.timeout).Result()
-	if nil != err {
+	// 使用 Lua 脚本原子性完成：先从 backup 取，backup 为空则从主队列阻塞取并写入 backup
+	result, err := popLuaScript.Run(ctx, q.redisClient, []string{q.name, q.backupName()}, int64(q.timeout.Seconds())).Text()
+	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return "", nil
 		}
 		return "", err
 	}
 
-	return str, nil
+	if len(result) == 0 {
+		return "", nil
+	}
+
+	return result, nil
+}
+
+func (q *queue) Close() error {
+	if q.redisClient != nil {
+		return q.redisClient.Close()
+	}
+	return nil
 }
 
 func (q *queue) backupName() string {

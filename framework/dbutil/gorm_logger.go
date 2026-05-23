@@ -1,25 +1,26 @@
 package dbutil
 
 import (
+	"fmt"
+	"log/slog"
 	"time"
 
-	"github.com/save95/xlog"
 	"gorm.io/gorm/logger"
 )
 
 type dbWriter struct {
-	log xlog.XLog
+	log *slog.Logger
 }
 
 func (l *dbWriter) Printf(s string, vs ...interface{}) {
-	l.log.Infof(s, vs...)
+	l.log.Info(fmt.Sprintf(s, vs...))
 }
 
-func newWriter(logger xlog.XLog) *dbWriter {
-	return &dbWriter{log: logger}
+func newWriter(l *slog.Logger) *dbWriter {
+	return &dbWriter{log: l}
 }
 
-func newLogger(l xlog.XLog) logger.Interface {
+func newLogger(l *slog.Logger) logger.Interface {
 	return logger.New(
 		newWriter(l),
 		logger.Config{
@@ -31,6 +32,6 @@ func newLogger(l xlog.XLog) logger.Interface {
 	)
 }
 
-func newLoggerWith(l xlog.XLog, conf *logger.Config) logger.Interface {
+func newLoggerWith(l *slog.Logger, conf *logger.Config) logger.Interface {
 	return logger.New(newWriter(l), *conf)
 }

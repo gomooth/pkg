@@ -2,9 +2,10 @@ package httpcontext
 
 import (
 	"context"
-	"errors"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gomooth/xerror"
+	"github.com/gomooth/xerror/xcode"
 )
 
 const (
@@ -17,17 +18,17 @@ const (
 func MustParse(ctx context.Context) (IHttpContext, error) {
 	gtx, ok := ctx.(*gin.Context)
 	if !ok {
-		return nil, errors.New("to GinContext failed")
+		return nil, xerror.NewXCode(xcode.InternalServerError, "to GinContext failed")
 	}
 
 	v, ok := gtx.Get(ContextKey)
 	if !ok {
-		return nil, errors.New("get HttpCustomContext failed")
+		return nil, xerror.NewXCode(xcode.InternalServerError, "get HttpCustomContext failed")
 	}
 
 	rtx, ok := v.(IHttpContext)
 	if !ok {
-		return nil, errors.New("to HttpContext failed")
+		return nil, xerror.NewXCode(xcode.InternalServerError, "to HttpContext failed")
 	}
 
 	return rtx, nil

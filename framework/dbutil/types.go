@@ -1,7 +1,8 @@
 package dbutil
 
 import (
-	"github.com/save95/xlog"
+	"log/slog"
+
 	"gorm.io/gorm/logger"
 )
 
@@ -9,7 +10,7 @@ import (
 type Option struct {
 	Name       string         // 连接别名
 	Config     *ConnectConfig // 连接配置
-	Logger     xlog.XLog      // 日志
+	Logger     *slog.Logger   // 日志
 	LoggerConf *logger.Config // 日志配置
 }
 
