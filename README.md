@@ -73,12 +73,14 @@ r.Use(middleware.JWTStatefulWith(opt, jwtStore))
 ### Kafka 消费
 
 ```go
-srv := kafkaconsumer.NewServer(
-    kafkaconsumer.WithBrokers([]string{"localhost:9092"}),
-    kafkaconsumer.WithMaxRetry(3),
+consumer := kafka.NewConsumer([]string{"localhost:9092"},
+kafka.WithConsumer("order-group", orderHandler, "orders"),
+kafka.WithMaxRetry(3),
 )
-srv.Register("my-group", handler, "my-topic")
-srv.Run(context.Background())
+
+mgr := app.NewManager()
+mgr.Register(consumer)
+mgr.MustRun(context.Background())
 ```
 
 ### 文件存储
@@ -130,13 +132,11 @@ path, _ := d.Path()    // storage/exports/reports/data.csv
 
 ### mq — [README](./mq/README.md)
 
-| 子包 | 说明 |
-|------|------|
-| [kafkaconsumer](./mq/kafkaconsumer/) | Kafka 消费者（同步/异步重试 + 死信） |
-| [kafkaproducer](./mq/kafkaproducer/) | Kafka 生产者（批量/顺序发送） |
-| [redisconsumer](./mq/redisconsumer/) | Redis 队列消费者 |
-| [httpsqsconsumer](./mq/httpsqsconsumer/) | HTTPSQS 消费者 |
-| [queue](./mq/queue/) | 通用队列接口 + BaseConsumer + Redis 实现 |
+| 子包 | 说明                                   |
+|------|--------------------------------------|
+| [kafka](./mq/kafka/) | Kafka 生产者（批量/顺序发送），消费者（同步/异步重试 + 死信） |
+| [redis](./mq/redis/) | Redis 队列生产者，消费者                    |
+| [httpsqs](./mq/httpsqs/) | HTTPSQS 消费者                        |
 
 ### job — [README](./job/README.md)
 
@@ -173,11 +173,9 @@ pkg/
 │   ├── restful/        # RESTful 标准响应
 │   └── xss/            # XSS 防护策略
 ├── mq/                 # 消息队列
-│   ├── kafkaconsumer/  # Kafka 消费者（重试 + 死信）
-│   ├── kafkaproducer/  # Kafka 生产者（批量/顺序）
-│   ├── redisconsumer/  # Redis 队列消费者
-│   ├── httpsqsconsumer/ # HTTPSQS 消费者
-│   └── queue/          # 通用队列接口 + BaseConsumer
+│   ├── kafka/          # Kafka 生产者（批量/顺序），消费者（重试 + 死信）
+│   ├── redis/          # Redis 队列消费者
+│   └── httpsqs/        # HTTPSQS 消费者
 ├── job/                # 定时任务
 │   ├── cron_wrapper.go # Cron 包装器
 │   └── job.go          # 命令式任务（自动重试 + 超时）
