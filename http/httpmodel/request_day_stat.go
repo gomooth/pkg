@@ -7,6 +7,9 @@ import (
 	"github.com/gomooth/xerror"
 )
 
+// timeNow 可在测试中替换以 mock 当前时间
+var timeNow = time.Now
+
 // DayStatRequest 通用日统计请求。都为空时，默认获取当周数据
 type DayStatRequest struct {
 	SearchRequest
@@ -82,7 +85,7 @@ func (in *DayStatRequest) computeStatAt() ([]time.Time, error) {
 
 // getMonday 获取本周周一的日期
 func (in *DayStatRequest) getMonday() time.Time {
-	now := time.Now()
+	now := timeNow()
 
 	offset := int(time.Monday - now.Weekday())
 	if offset > 0 {

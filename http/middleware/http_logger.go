@@ -9,6 +9,7 @@ import (
 
 const httpLoggerDisabledKey = "gomooth/pkg/middleware:httpLoggerDisabled"
 
+// HttpLoggerOption HTTP 日志中间件的配置选项
 type HttpLoggerOption struct {
 	Logger          *slog.Logger
 	OnlyError       bool     // 仅发生错误时，打印日志；否则，打印所有请求

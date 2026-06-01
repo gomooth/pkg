@@ -2,20 +2,21 @@ package jwt
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/pkg/framework/xcode"
 	"github.com/gomooth/pkg/http/httpcontext"
 	"github.com/gomooth/pkg/http/jwt"
 	"github.com/gomooth/xerror"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
-var jwtMeter = metrics.GetProvider().Meter("jwt")
+var jwtMeter = telemetry.Meter("jwt")
 
 var (
-	jwtOperationCounter    = jwtMeter.Int64Counter("jwt.operation")
-	jwtTokenRefreshCounter = jwtMeter.Int64Counter("jwt.token.refresh")
+	jwtOperationCounter, _    = jwtMeter.Int64Counter("jwt.operation")
+	jwtTokenRefreshCounter, _ = jwtMeter.Int64Counter("jwt.token.refresh")
 )
 
 type IHandler interface {
@@ -39,8 +40,8 @@ func NewHandler(ctx *gin.Context, opt *jwt.Option) IHandler {
 func (h *handler) Handle() error {
 	if h.opt == nil || h.opt.RoleConvert() == nil {
 		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-			metrics.Attr("handler", "stateless"),
-			metrics.Attr("result", "parse_error"),
+			attribute.String("handler", "stateless"),
+			attribute.String("result", "parse_error"),
 		))
 		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwt: option is empty")
 	}
@@ -48,24 +49,24 @@ func (h *handler) Handle() error {
 	_, token, err := jwt.ParseTokenWithGinAndOption(h.ctx, h.opt)
 	if err != nil {
 		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-			metrics.Attr("handler", "stateless"),
-			metrics.Attr("result", "parse_error"),
+			attribute.String("handler", "stateless"),
+			attribute.String("result", "parse_error"),
 		))
 		return xerror.WrapWithXCode(err, xcode.ErrJWTTokenInvalid)
 	}
 
 	if token.IsExpired() {
 		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-			metrics.Attr("handler", "stateless"),
-			metrics.Attr("result", "expired"),
+			attribute.String("handler", "stateless"),
+			attribute.String("result", "expired"),
 		))
 		return xerror.NewXCode(xcode.ErrJWTTokenExpired, "jwt: token expired")
 	}
 
 	if token.IsStateful() {
 		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-			metrics.Attr("handler", "stateless"),
-			metrics.Attr("result", "parse_error"),
+			attribute.String("handler", "stateless"),
+			attribute.String("result", "parse_error"),
 		))
 		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, "jwt: stateless token required, use JWTWith middleware")
 	}
@@ -73,8 +74,8 @@ func (h *handler) Handle() error {
 	user, err := token.GetUser(h.opt.RoleConvert())
 	if err != nil {
 		jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-			metrics.Attr("handler", "stateless"),
-			metrics.Attr("result", "parse_error"),
+			attribute.String("handler", "stateless"),
+			attribute.String("result", "parse_error"),
 		))
 		return err
 	}
@@ -84,13 +85,13 @@ func (h *handler) Handle() error {
 		if newToken, err := token.ToString(h.ctx.Request.Context()); err == nil {
 			h.ctx.Header(jwt.TokenHeaderKey, newToken)
 			jwtTokenRefreshCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-				metrics.Attr("handler", "stateless"),
-				metrics.Attr("result", "success"),
+				attribute.String("handler", "stateless"),
+				attribute.String("result", "success"),
 			))
 		} else {
 			jwtTokenRefreshCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-				metrics.Attr("handler", "stateless"),
-				metrics.Attr("result", "failure"),
+				attribute.String("handler", "stateless"),
+				attribute.String("result", "failure"),
 			))
 		}
 	}
@@ -98,8 +99,8 @@ func (h *handler) Handle() error {
 	ensureUserInContext(h.ctx, user)
 
 	jwtOperationCounter.Add(h.ctx.Request.Context(), 1, metric.WithAttributes(
-		metrics.Attr("handler", "stateless"),
-		metrics.Attr("result", "success"),
+		attribute.String("handler", "stateless"),
+		attribute.String("result", "success"),
 	))
 	return nil
 }
@@ -112,11 +113,7 @@ func ensureUserInContext(ctx *gin.Context, user *httpcontext.User) {
 		stx, _ = v.(httpcontext.IHttpContext)
 	}
 	if stx == nil {
-		var err error
-		stx, err = httpcontext.NewContext()
-		if err != nil {
-			return
-		}
+		stx = httpcontext.NewContext()
 	} else if stx.User() != nil {
 		return
 	}

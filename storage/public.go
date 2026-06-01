@@ -135,14 +135,17 @@ func newPublic(opts ...func(*Option)) *public {
 	}
 }
 
+// Public 创建公开存储实例，文件存储在 {root}/public 目录下
 func Public(opts ...func(*Option)) IPublicStorage {
 	return newPublic(opts...)
 }
 
+// PublicFromFile 从文件名创建公开存储实例，自动解析目录和文件名
 func PublicFromFile(filename string, opts ...func(*Option)) IPublicStorage {
 	return newPublic(opts...).withFile(filename)
 }
 
+// PublicFromUrl 从 URL 创建公开存储实例，自动解析目录和文件名
 func PublicFromUrl(fileURL string, opts ...func(*Option)) IPublicStorage {
 	return newPublic(opts...).withURL(fileURL)
 }
@@ -227,6 +230,7 @@ func (p *public) withURL(fileURL string) *public {
 	return p.setDirsAndName(relPart)
 }
 
+// AppendDir 追加存储目录（链式调用）
 func (p *public) AppendDir(dirs ...string) IPublicStorage {
 	if p.err != nil {
 		return p
@@ -242,6 +246,7 @@ func (p *public) AppendDir(dirs ...string) IPublicStorage {
 	return p
 }
 
+// SetName 设置文件名（链式调用）
 func (p *public) SetName(name string) IPublicStorage {
 	if p.err != nil {
 		return p

@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// ICache 泛型缓存接口，提供基于命名空间的缓存读写能力
 type ICache[T any] interface {
 	// Get 获取缓存，返回缓存数据的 json 字符串，ttl, 和错误
 	Get(ctx context.Context, key string) (*T, time.Duration, error)

@@ -11,7 +11,7 @@ import (
 	"github.com/eko/gocache/lib/v4/cache"
 	"github.com/eko/gocache/lib/v4/store"
 	"github.com/gomooth/pkg/framework/dbquery"
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 	pkgxcode "github.com/gomooth/pkg/framework/xcode"
 
 	"github.com/redis/go-redis/v9"
@@ -19,6 +19,7 @@ import (
 	"github.com/gomooth/xerror"
 	"github.com/gomooth/xerror/xcode"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/singleflight"
 )
@@ -38,15 +39,15 @@ type dbCache[E, F any] struct {
 // errorCacheKeySuffix 错误占位值的缓存键后缀，与正常数据完全隔离
 const errorCacheKeySuffix = ":__err__"
 
-var dbCacheMeter = metrics.GetProvider().Meter("dbcache")
+var dbCacheMeter = telemetry.Meter("dbcache")
 
 var (
-	dbCacheHitCounter           = dbCacheMeter.Int64Counter("dbcache.hit")
-	dbCacheMissCounter          = dbCacheMeter.Int64Counter("dbcache.miss")
-	dbCacheRenewCounter         = dbCacheMeter.Int64Counter("dbcache.renew")
-	dbCacheErrorCacheHitCounter = dbCacheMeter.Int64Counter("dbcache.error_cache.hit")
-	dbCacheWriteCounter         = dbCacheMeter.Int64Counter("dbcache.write")
-	dbCacheOperationDuration    = dbCacheMeter.Float64Histogram("dbcache.operation.duration",
+	dbCacheHitCounter, _           = dbCacheMeter.Int64Counter("dbcache.hit")
+	dbCacheMissCounter, _          = dbCacheMeter.Int64Counter("dbcache.miss")
+	dbCacheRenewCounter, _         = dbCacheMeter.Int64Counter("dbcache.renew")
+	dbCacheErrorCacheHitCounter, _ = dbCacheMeter.Int64Counter("dbcache.error_cache.hit")
+	dbCacheWriteCounter, _         = dbCacheMeter.Int64Counter("dbcache.write")
+	dbCacheOperationDuration, _    = dbCacheMeter.Float64Histogram("dbcache.operation.duration",
 		metric.WithUnit("s"))
 )
 
@@ -56,9 +57,9 @@ func recordDBCacheDuration(ctx context.Context, namespace, operation string, dur
 		result = "error"
 	}
 	attrs := metric.WithAttributes(
-		metrics.Attr("namespace", namespace),
-		metrics.Attr("operation", operation),
-		metrics.Attr("result", result),
+		attribute.String("namespace", namespace),
+		attribute.String("operation", operation),
+		attribute.String("result", result),
 	)
 	dbCacheOperationDuration.Record(ctx, dur.Seconds(), attrs)
 }
@@ -314,7 +315,7 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 	cachedTags := append([]string{"dbcache", s.ownTag()}, tags...)
 	cacheData, d, err := s.cacheManager.GetWithTTL(ctx, key)
 	if err == nil {
-		dbCacheHitCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name)))
+		dbCacheHitCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name)))
 
 		// 延长时效：当剩余 TTL <= expiration * renewThreshold 时续期
 		// 使用 renewSingle 去重，避免多个 goroutine 同时续期同一 key 造成写入风暴
@@ -328,12 +329,12 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 					slog.Warn("dbcache: auto-renew set failed", slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
 					return nil, err
 				}
-				dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name), metrics.Attr("result", "success")))
+				dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success")))
 				return nil, nil
 			}); err != nil {
 				// 续期失败不影响本次读取，仅记录日志
 				slog.Warn("dbcache: auto-renew failed", slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
-				dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name), metrics.Attr("result", "failure")))
+				dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
 			}
 		}
 
@@ -347,13 +348,13 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 			slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
 	}
 
-	dbCacheMissCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name)))
+	dbCacheMissCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name)))
 
 	// 检查是否有错误占位值（独立键存储，与正常数据完全隔离）
 	if s.errorCacheTTL > 0 {
 		errKey := key + errorCacheKeySuffix
 		if errData, _, errErr := s.cacheManager.GetWithTTL(ctx, errKey); errErr == nil {
-			dbCacheErrorCacheHitCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name)))
+			dbCacheErrorCacheHitCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name)))
 			return nil, xerror.NewXCode(pkgxcode.ErrCacheMiss, errData)
 		}
 	}
@@ -371,7 +372,7 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 				); setErr != nil {
 					slog.Debug("dbcache: error cache set failed", slog.String("component", "dbcache"), slog.String("key", errKey), slog.String("error", setErr.Error()))
 				} else {
-					dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name), metrics.Attr("result", "failure")))
+					dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
 				}
 			}
 			return nil, err
@@ -386,9 +387,9 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 		); err != nil {
 			slog.Error("dbcache: cache set failed, degrading to direct result",
 				slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
-			dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name), metrics.Attr("result", "failure")))
+			dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
 		} else {
-			dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(metrics.Attr("namespace", s.name), metrics.Attr("result", "success")))
+			dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success")))
 		}
 
 		return result, nil

@@ -7,10 +7,15 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/pkg/framework/xcode"
+	mqqueue "github.com/gomooth/pkg/mq/queue"
 	"github.com/gomooth/pkg/mq/redis/internal"
 	"github.com/gomooth/xerror"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -98,16 +103,34 @@ func (e *producerEngine) Produce(ctx context.Context, queue string, message []by
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
+	// Create producer Span
+	tracer := telemetry.Tracer("mq.redis.producer")
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("%s produce", queue),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "redis"),
+			attribute.String("messaging.destination", queue),
+		),
+		trace.WithSpanKind(trace.SpanKindProducer),
+	)
+	defer span.End()
+
+	// Inject trace context into message
+	injectedMsg := mqqueue.InjectTraceContext(ctx, string(message))
+
 	e.mu.RLock()
 	client := e.client
 	e.mu.RUnlock()
 
 	if client == nil {
+		span.RecordError(fmt.Errorf("producer not connected"))
+		span.SetStatus(codes.Error, "producer not connected")
 		return xerror.NewXCode(xcode.ErrMQPublish, "producer not connected")
 	}
 
 	queueKey := fmt.Sprintf("%s%s", e.opt.queuePrefix, queue)
-	if err := client.LPush(ctx, queueKey, message).Err(); err != nil {
+	if err := client.LPush(ctx, queueKey, []byte(injectedMsg)).Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		if e.metrics != nil {
 			e.metrics.OnError()
 		}
@@ -117,6 +140,7 @@ func (e *producerEngine) Produce(ctx context.Context, queue string, message []by
 	if e.metrics != nil {
 		e.metrics.OnProduce(1)
 	}
+	span.SetStatus(codes.Ok, "")
 	return nil
 }
 
@@ -129,22 +153,39 @@ func (e *producerEngine) ProduceBatch(ctx context.Context, queue string, message
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
+	// Create producer Span
+	tracer := telemetry.Tracer("mq.redis.producer")
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("%s produce batch", queue),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "redis"),
+			attribute.String("messaging.destination", queue),
+			attribute.Int("messaging.batch.size", len(messages)),
+		),
+		trace.WithSpanKind(trace.SpanKindProducer),
+	)
+	defer span.End()
+
 	e.mu.RLock()
 	client := e.client
 	e.mu.RUnlock()
 
 	if client == nil {
+		span.RecordError(fmt.Errorf("producer not connected"))
+		span.SetStatus(codes.Error, "producer not connected")
 		return xerror.NewXCode(xcode.ErrMQPublish, "producer not connected")
 	}
 
 	queueKey := fmt.Sprintf("%s%s", e.opt.queuePrefix, queue)
 
-	// 使用 Pipeline 批量推送
+	// 使用 Pipeline 批量推送，注入 trace context
 	pipe := client.Pipeline()
 	for _, msg := range messages {
-		pipe.LPush(ctx, queueKey, msg)
+		injectedMsg := mqqueue.InjectTraceContext(ctx, string(msg))
+		pipe.LPush(ctx, queueKey, []byte(injectedMsg))
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		if e.metrics != nil {
 			e.metrics.OnError()
 		}
@@ -154,5 +195,6 @@ func (e *producerEngine) ProduceBatch(ctx context.Context, queue string, message
 	if e.metrics != nil {
 		e.metrics.OnProduce(len(messages))
 	}
+	span.SetStatus(codes.Ok, "")
 	return nil
 }

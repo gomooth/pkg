@@ -45,6 +45,7 @@ func WithPreload(preloads ...string) findOptionBuilder {
 	}
 }
 
+// WithSelect 设置查询字段选择，仅查询指定列
 func WithSelect(selects ...string) findOptionBuilder {
 	return func(opt *findOption) {
 		if opt.selects == nil {

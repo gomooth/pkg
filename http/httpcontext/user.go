@@ -13,6 +13,7 @@ type User struct {
 	Extend map[string]string // 扩展信息
 }
 
+// GetID 返回用户 ID
 func (u *User) GetID() uint {
 	if u == nil {
 		return 0
@@ -20,6 +21,7 @@ func (u *User) GetID() uint {
 	return u.ID
 }
 
+// GetAccount 返回用户账号
 func (u *User) GetAccount() string {
 	if u == nil {
 		return ""
@@ -27,6 +29,7 @@ func (u *User) GetAccount() string {
 	return u.Account
 }
 
+// GetName 返回用户姓名
 func (u *User) GetName() string {
 	if u == nil {
 		return ""
@@ -34,6 +37,7 @@ func (u *User) GetName() string {
 	return u.Name
 }
 
+// GetRoles 返回用户角色列表的副本
 func (u *User) GetRoles() []IRole {
 	if u == nil {
 		return make([]IRole, 0)
@@ -50,6 +54,7 @@ func (u *User) RolesRef() []IRole {
 	return u.Roles
 }
 
+// Is 判断用户是否拥有指定角色
 func (u *User) Is(role IRole) bool {
 	if u == nil {
 		return false
@@ -63,6 +68,7 @@ func (u *User) Is(role IRole) bool {
 	return false
 }
 
+// GetIP 返回用户登录 IP
 func (u *User) GetIP() string {
 	if u == nil {
 		return ""
@@ -70,6 +76,7 @@ func (u *User) GetIP() string {
 	return u.IP
 }
 
+// GetExtend 返回用户扩展信息的副本
 func (u *User) GetExtend() map[string]string {
 	if u == nil || u.Extend == nil {
 		return make(map[string]string)
@@ -81,6 +88,7 @@ func (u *User) GetExtend() map[string]string {
 	return cp
 }
 
+// GetExtendValue 返回用户扩展信息中指定字段的值
 func (u *User) GetExtendValue(field string) string {
 	extend := u.GetExtend()
 	return extend[field]

@@ -3,8 +3,6 @@ package types
 import (
 	"log/slog"
 	"time"
-
-	"go.opentelemetry.io/otel/log"
 )
 
 type Option struct {
@@ -13,10 +11,6 @@ type Option struct {
 	Format LogFormat // 日志格式
 
 	StdPrint bool // 是否在控制台输出
-
-	// OTelLoggerProvider OTel LoggerProvider，设置后日志将同时通过 OTLP 导出。
-	// nil 则仅输出到本地文件/控制台。
-	OTelLoggerProvider log.LoggerProvider
 
 	// Sampling 采样配置，nil 表示不启用采样
 	Sampling *SamplingConfig

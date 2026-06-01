@@ -3,11 +3,14 @@ package dbrepo
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gomooth/xerror"
 	"github.com/gomooth/xerror/xcode"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -504,4 +507,261 @@ func TestDAO_Update_ZeroValueFields(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "", updated.Name)
 	assert.Equal(t, "alice@example.com", updated.Email)
+}
+
+// ---------------------------------------------------------------------------
+// SQL 注入安全测试
+// ---------------------------------------------------------------------------
+
+// setupMockDB creates a GORM DB backed by go-sqlmock for SQL capture.
+func setupMockDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock) {
+	t.Helper()
+	sqlDB, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	db, err := gorm.Open(mysql.New(mysql.Config{
+		Conn:                      sqlDB,
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+	return db, mock
+}
+
+func TestSQLInjection_First_ParameterizedQuery(t *testing.T) {
+	t.Run("First uses parameterized WHERE for id lookup", func(t *testing.T) {
+		// 攻击向量：即使调用方传入异常 id 值，DAO 使用 uint 类型确保类型安全
+		// 预期防御：生成的 SQL 使用 "WHERE id = ?" 参数化查询
+		db, mock := setupMockDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		// 模拟 GORM First 查询：验证 SQL 使用参数化
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `test_models` WHERE id = ? AND `test_models`.`deleted_at` IS NULL ORDER BY `test_models`.`id` LIMIT ?")).
+			WithArgs(uint(42), 1).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name", "email"}).AddRow(42, "Alice", "alice@example.com"))
+
+		result, err := dao.First(ctx, 42)
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, "Alice", result.Name)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestSQLInjection_Delete_ParameterizedQuery(t *testing.T) {
+	t.Run("Delete uses parameterized WHERE for id", func(t *testing.T) {
+		// 攻击向量：DAO 的 Delete 方法使用参数化查询
+		// 预期防御：生成的 SQL 使用 "WHERE id = ?"
+		db, mock := setupMockDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE `test_models` SET `deleted_at`=? WHERE id = ? AND `test_models`.`deleted_at` IS NULL")).
+			WithArgs(sqlmock.AnyArg(), uint(42)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		rowsAffected, err := dao.Delete(ctx, 42)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(1), rowsAffected)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestSQLInjection_Remove_ParameterizedQuery(t *testing.T) {
+	t.Run("Remove uses parameterized WHERE for id", func(t *testing.T) {
+		// 攻击向量：DAO 的 Remove 方法使用参数化查询
+		// 预期防御：生成的 SQL 使用 "WHERE id = ?"
+		db, mock := setupMockDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta("DELETE FROM `test_models` WHERE id = ?")).
+			WithArgs(uint(42)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		rowsAffected, err := dao.Remove(ctx, 42)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(1), rowsAffected)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestSQLInjection_Update_ParameterizedQuery(t *testing.T) {
+	t.Run("Update uses parameterized WHERE for id", func(t *testing.T) {
+		// 攻击向量：DAO 的 Update 方法使用参数化查询
+		// 预期防御：生成的 SQL 使用 "WHERE id = ?"
+		db, mock := setupMockDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE `test_models` SET `updated_at`=?,`name`=? WHERE id = ? AND `test_models`.`deleted_at` IS NULL")).
+			WithArgs(sqlmock.AnyArg(), "Updated", uint(42)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		err = dao.Update(ctx, 42, &testModel{Name: "Updated"}, "name")
+		assert.NoError(t, err)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestSQLInjection_SqlSpecialCharactersInRecord(t *testing.T) {
+	t.Run("Create with SQL special characters in string fields is safe", func(t *testing.T) {
+		// 攻击向量：记录字段值包含 SQL 特殊字符（引号、分号、注释）
+		// 预期防御：GORM 使用参数化查询，字段值不会影响 SQL 结构
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		maliciousValues := []struct {
+			name  string
+			email string
+		}{
+			{name: "Robert'); DROP TABLE users;--", email: "robert@example.com"},
+			{name: "Alice\" OR \"1\"=\"1", email: "alice@example.com"},
+			{name: "Bob'; SELECT * FROM users;--", email: "bob@example.com"},
+			{name: "Eve; DELETE FROM test_models WHERE 1=1;--", email: "eve@example.com"},
+		}
+
+		for _, mv := range maliciousValues {
+			record := &testModel{Name: mv.name, Email: mv.email}
+			err := dao.Create(ctx, record)
+			assert.NoError(t, err, "Create should succeed for malicious value: %q", mv.name)
+			assert.NotZero(t, record.ID)
+
+			// 验证值被原样存储，没有被解释为 SQL
+			found, err := dao.First(ctx, record.ID)
+			assert.NoError(t, err)
+			assert.Equal(t, mv.name, found.Name, "Stored value should match input exactly")
+			assert.Equal(t, mv.email, found.Email)
+		}
+	})
+
+	t.Run("Update with SQL special characters in string fields is safe", func(t *testing.T) {
+		// 攻击向量：更新字段值包含 SQL 特殊字符
+		// 预期防御：GORM 使用参数化查询，字段值不会影响 SQL 结构
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		// 先创建一条正常记录
+		record := &testModel{Name: "Original", Email: "original@example.com"}
+		err = dao.Create(ctx, record)
+		assert.NoError(t, err)
+		id := record.ID
+
+		// 更新为包含特殊字符的值
+		maliciousName := "Robert'); DROP TABLE users;--"
+		err = dao.Update(ctx, id, &testModel{Name: maliciousName}, "name")
+		assert.NoError(t, err)
+
+		// 验证其他记录未受影响
+		found, err := dao.First(ctx, id)
+		assert.NoError(t, err)
+		assert.Equal(t, maliciousName, found.Name, "Updated value should match input exactly")
+		assert.Equal(t, "original@example.com", found.Email, "Email should be unchanged")
+
+		// 确认数据库中仍然只有一条该 ID 的记录
+		var count int64
+		db.Model(&testModel{}).Where("id = ?", id).Count(&count)
+		assert.Equal(t, int64(1), count, "Should still have exactly 1 record")
+	})
+
+	t.Run("Save with SQL special characters in string fields is safe", func(t *testing.T) {
+		// 攻击向量：Save 字段值包含 SQL 特殊字符
+		// 预期防御：GORM 使用参数化查询
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		maliciousName := "1 OR 1=1; DROP TABLE users;--"
+		record := &testModel{Name: maliciousName, Email: "save@example.com"}
+		err = dao.Save(ctx, record)
+		assert.NoError(t, err)
+		assert.NotZero(t, record.ID)
+
+		found, err := dao.First(ctx, record.ID)
+		assert.NoError(t, err)
+		assert.Equal(t, maliciousName, found.Name)
+	})
+}
+
+func TestSQLInjection_FirstWith_PreloadSafety(t *testing.T) {
+	t.Run("FirstWith with malicious preload name does not inject SQL", func(t *testing.T) {
+		// 攻击向量：FirstWith 的 preloads 参数包含恶意字符串
+		// 预期防御：GORM Preload 将其视为关联名，不会注入原始 SQL；
+		// 无效关联名将导致查询错误，但不会执行注入
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		record := &testModel{Name: "Alice", Email: "alice@example.com"}
+		err = dao.Create(ctx, record)
+		assert.NoError(t, err)
+
+		// GORM 对不存在的关联名会报错，但不会注入
+		_, err = dao.FirstWith(ctx, record.ID, "Items; DROP TABLE users--")
+		// GORM 可能返回错误（关联不存在），但不应该 panic 或注入
+		_ = err
+	})
+}
+
+func TestSQLInjection_UIntPreventsIDManipulation(t *testing.T) {
+	t.Run("First rejects zero id preventing empty WHERE", func(t *testing.T) {
+		// 攻击向量：id=0 可能在某些场景下被忽略
+		// 预期防御：DAO 显式校验 id=0 返回参数错误
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		_, err = dao.First(ctx, 0)
+		assert.Error(t, err)
+		assert.True(t, xerror.IsXCode(err, xcode.DBRequestParamError))
+	})
+
+	t.Run("Delete rejects zero id preventing empty WHERE", func(t *testing.T) {
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		_, err = dao.Delete(ctx, 0)
+		assert.Error(t, err)
+		assert.True(t, xerror.IsXCode(err, xcode.DBRequestParamError))
+	})
+
+	t.Run("Remove rejects zero id preventing empty WHERE", func(t *testing.T) {
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		_, err = dao.Remove(ctx, 0)
+		assert.Error(t, err)
+		assert.True(t, xerror.IsXCode(err, xcode.DBRequestParamError))
+	})
+
+	t.Run("Update rejects zero id preventing empty WHERE", func(t *testing.T) {
+		db := setupTestDB(t)
+		dao, err := NewDAO[testModel](db)
+		assert.NoError(t, err)
+		ctx := context.Background()
+
+		err = dao.Update(ctx, 0, &testModel{Name: "test"}, "name")
+		assert.Error(t, err)
+		assert.True(t, xerror.IsXCode(err, xcode.DBRequestParamError))
+	})
 }

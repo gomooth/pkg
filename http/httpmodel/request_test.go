@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDayStatRequest_StatAtRange(t *testing.T) {
@@ -57,6 +58,38 @@ func TestDayStatRequest_StatAtRange(t *testing.T) {
 			wantErr:  true,
 			errMsg:   "开始日期不能在结束日期之后",
 		},
+		{
+			name:     "cross month",
+			startDay: "2024-01-28",
+			endDay:   "2024-02-05",
+			want: []time.Time{
+				time.Date(2024, 1, 28, 0, 0, 0, 0, time.Local),
+				time.Date(2024, 2, 5, 23, 59, 59, 999999999, time.Local),
+			},
+			wantErr: false,
+		},
+		{
+			name:     "cross year",
+			startDay: "2023-12-28",
+			endDay:   "2024-01-05",
+			want: []time.Time{
+				time.Date(2023, 12, 28, 0, 0, 0, 0, time.Local),
+				time.Date(2024, 1, 5, 23, 59, 59, 999999999, time.Local),
+			},
+			wantErr: false,
+		},
+		{
+			name:     "empty start day",
+			startDay: "",
+			endDay:   "2024-01-07",
+			wantErr:  true,
+		},
+		{
+			name:     "empty end day",
+			startDay: "2024-01-01",
+			endDay:   "",
+			wantErr:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -70,7 +103,9 @@ func TestDayStatRequest_StatAtRange(t *testing.T) {
 
 			if tt.wantErr {
 				assert.Error(t, err)
-				assert.EqualError(t, err, tt.errMsg)
+				if tt.errMsg != "" {
+					assert.EqualError(t, err, tt.errMsg)
+				}
 				return
 			}
 
@@ -103,18 +138,18 @@ func TestDayStatRequest_StatAtRangeOrLastWeek(t *testing.T) {
 			wantEnd:   time.Date(2024, 1, 7, 23, 59, 59, 999999999, time.Local),
 		},
 		{
-			name:      "without date range (fallback to last week)",
+			name:      "without date range (fallback to this week)",
 			startDay:  "",
 			endDay:    "",
-			wantStart: time.Date(2026, 5, 25, 0, 0, 0, 0, time.Local), // 2026-05-28的上周一
-			wantEnd:   time.Date(2026, 5, 31, 0, 0, 0, 0, time.Local), // 2026-05-28的周日的 00:00:00 (注意：StatAtRangeOrLastWeek不设置23:59:59)
+			wantStart: time.Date(2024, 1, 8, 0, 0, 0, 0, time.Local), // 2024-01-10的本周一
+			wantEnd:   time.Date(2024, 1, 14, 0, 0, 0, 0, time.Local), // 2024-01-10的本周日
 		},
 		{
-			name:      "with invalid date range (fallback to last week)",
+			name:      "with invalid date range (fallback to this week)",
 			startDay:  "invalid",
 			endDay:    "date",
-			wantStart: time.Date(2026, 5, 25, 0, 0, 0, 0, time.Local), // 2026-05-28的上周一
-			wantEnd:   time.Date(2026, 5, 31, 0, 0, 0, 0, time.Local), // 2026-05-28的周日的 00:00:00 (注意：StatAtRangeOrLastWeek不设置23:59:59)
+			wantStart: time.Date(2024, 1, 8, 0, 0, 0, 0, time.Local), // 2024-01-10的本周一
+			wantEnd:   time.Date(2024, 1, 14, 0, 0, 0, 0, time.Local), // 2024-01-10的本周日
 		},
 	}
 
@@ -144,9 +179,25 @@ func TestDayStatRequest_getMonday(t *testing.T) {
 	req := &DayStatRequest{}
 	monday := req.getMonday()
 
-	expected := time.Date(2026, 5, 25, 0, 0, 0, 0, time.Local) // 2026-05-28的上周一
+	expected := time.Date(2026, 5, 25, 0, 0, 0, 0, time.Local) // 2026-05-28的本周一
 	assert.Equal(t, expected, monday)
 	assert.Equal(t, time.Weekday(1), monday.Weekday())
+}
+
+func TestDayStatRequest_getMonday_Sunday(t *testing.T) {
+	// 当今天是周日时，offset > 0 会变成 -6，所以周一应该是上周一
+	fixedTime := time.Date(2024, 1, 14, 10, 0, 0, 0, time.Local) // 2024-01-14 星期日
+	timeNow = func() time.Time { return fixedTime }
+	defer func() {
+		timeNow = time.Now
+	}()
+
+	req := &DayStatRequest{}
+	monday := req.getMonday()
+
+	expected := time.Date(2024, 1, 8, 0, 0, 0, 0, time.Local) // 周一的日期
+	assert.Equal(t, expected, monday)
+	assert.Equal(t, time.Monday, monday.Weekday())
 }
 
 func TestSearchRequest_DefaultValues(t *testing.T) {
@@ -189,5 +240,165 @@ func TestSearchRequest_DefaultValues(t *testing.T) {
 	}
 }
 
-// 覆盖time.Now以便测试
-var timeNow = time.Now
+func TestDayStatRequest_StatDayRange(t *testing.T) {
+	tests := []struct {
+		name     string
+		startDay string
+		endDay   string
+		want     []uint
+		wantErr  bool
+	}{
+		{
+			name:     "valid date range",
+			startDay: "2024-01-01",
+			endDay:   "2024-01-07",
+			want:     []uint{20240101, 20240107},
+			wantErr:  false,
+		},
+		{
+			name:     "same day",
+			startDay: "2024-03-15",
+			endDay:   "2024-03-15",
+			want:     []uint{20240315, 20240315},
+			wantErr:  false,
+		},
+		{
+			name:     "cross month",
+			startDay: "2024-01-28",
+			endDay:   "2024-02-05",
+			want:     []uint{20240128, 20240205},
+			wantErr:  false,
+		},
+		{
+			name:     "cross year",
+			startDay: "2023-12-28",
+			endDay:   "2024-01-05",
+			want:     []uint{20231228, 20240105},
+			wantErr:  false,
+		},
+		{
+			name:     "invalid start day",
+			startDay: "invalid",
+			endDay:   "2024-01-07",
+			wantErr:  true,
+		},
+		{
+			name:     "invalid end day",
+			startDay: "2024-01-01",
+			endDay:   "bad",
+			wantErr:  true,
+		},
+		{
+			name:     "start after end",
+			startDay: "2024-01-08",
+			endDay:   "2024-01-07",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &DayStatRequest{
+				StartDay: tt.startDay,
+				EndDay:   tt.endDay,
+			}
+
+			got, err := req.StatDayRange()
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDayStatRequest_StatDayRangeOrLastWeek(t *testing.T) {
+	// 固定时间以便测试：2024年1月10日 星期三
+	fixedTime := time.Date(2024, 1, 10, 10, 30, 0, 0, time.Local)
+	timeNow = func() time.Time { return fixedTime }
+	defer func() {
+		timeNow = time.Now
+	}()
+
+	tests := []struct {
+		name     string
+		startDay string
+		endDay   string
+		want     []uint
+	}{
+		{
+			name:     "with valid date range",
+			startDay: "2024-01-01",
+			endDay:   "2024-01-07",
+			want:     []uint{20240101, 20240107},
+		},
+		{
+			name:     "without date range (fallback to this week)",
+			startDay: "",
+			endDay:   "",
+			want:     []uint{20240108, 20240114},
+		},
+		{
+			name:     "with invalid date range (fallback to this week)",
+			startDay: "invalid",
+			endDay:   "date",
+			want:     []uint{20240108, 20240114},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &DayStatRequest{
+				StartDay: tt.startDay,
+				EndDay:   tt.endDay,
+			}
+
+			got := req.StatDayRangeOrLastWeek()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCursorSearchRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		req    CursorSearchRequest
+		after  string
+		limit  int
+	}{
+		{
+			name:  "zero values",
+			req:   CursorSearchRequest{},
+			after: "",
+			limit: 0,
+		},
+		{
+			name:  "with values",
+			req:   CursorSearchRequest{After: "abc123", Limit: 20},
+			after: "abc123",
+			limit: 20,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.after, tt.req.After)
+			assert.Equal(t, tt.limit, tt.req.Limit)
+		})
+	}
+}
+
+func TestResponseModel(t *testing.T) {
+	rm := ResponseModel{
+		ID:          42,
+		CreatedTime: "2024-01-01T00:00:00Z",
+		UpdatedTime: "2024-01-02T00:00:00Z",
+	}
+	assert.Equal(t, uint(42), rm.ID)
+	assert.Equal(t, "2024-01-01T00:00:00Z", rm.CreatedTime)
+	assert.Equal(t, "2024-01-02T00:00:00Z", rm.UpdatedTime)
+}

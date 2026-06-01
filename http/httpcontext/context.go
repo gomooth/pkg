@@ -2,7 +2,6 @@ package httpcontext
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,11 +11,10 @@ import (
 // 避免与标准库或其他包的 string key 冲突。
 type ctxKey string
 
+// IHttpContext 自定义 HTTP 请求上下文接口，封装用户信息、角色判断和上下文数据存取
 type IHttpContext interface {
 	context.Context
 
-	// TraceID 链路追踪标志
-	TraceID() string
 	// User 用户信息（返回防御性拷贝，修改返回值不影响内部状态）
 	User() *User
 	// IsRole 判断用户角色
@@ -30,35 +28,21 @@ type IHttpContext interface {
 }
 
 type httpContext struct {
-	parent  context.Context
-	traceID string
-	user    *User
+	parent context.Context
+	user   *User
 }
 
-func NewContext(opts ...func(*httpContext)) (IHttpContext, error) {
-	traceID, err := makeTraceID()
-	if err != nil {
-		return nil, err
-	}
-	spanID, err := makeSpanID()
-	if err != nil {
-		return nil, err
-	}
-
+// NewContext 创建自定义 HTTP 上下文，通过选项函数进行初始化配置
+func NewContext(opts ...func(*httpContext)) IHttpContext {
 	c := &httpContext{
-		parent:  context.Background(),
-		traceID: fmt.Sprintf("00-%s-%s-01", traceID, spanID),
+		parent: context.Background(),
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
 
-	return c, nil
-}
-
-func (c *httpContext) TraceID() string {
-	return c.traceID
+	return c
 }
 
 func (c *httpContext) User() *User {
@@ -110,6 +94,7 @@ func (c *httpContext) Set(key string, value any) IHttpContext {
 	return c
 }
 
+// SetUser 设置用户信息，内部会进行深拷贝
 func (c *httpContext) SetUser(user User) IHttpContext {
 	clone := user.Clone()
 	c.user = &clone

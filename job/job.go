@@ -8,6 +8,10 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/framework/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type commandJob struct {
@@ -25,14 +29,25 @@ type commandJob struct {
 
 func (j commandJob) Run() {
 	j.logf("debug", "[job] %s run starting", j.jobName)
+	start := time.Now()
 	defer j.logf("debug", "[job] %s run end", j.jobName)
+
+	tracer := telemetry.Tracer("job")
+
+	ctx, span := tracer.Start(context.Background(), j.jobName,
+		trace.WithAttributes(
+			attribute.String("job.name", j.jobName),
+			attribute.String("job.type", "cron"),
+		),
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	defer span.End()
 
 	cfg := retry.Config{
 		MaxAttempts: uint(j.maxRetry) + 1,
 		Strategy:    &retry.LinearDelay{Base: 1e9},
 	}
 
-	ctx := context.Background()
 	var cancel context.CancelFunc
 	if j.timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, j.timeout)
@@ -46,6 +61,10 @@ func (j commandJob) Run() {
 		}
 		err := j.job.Run(ctx, j.args...)
 		if err != nil {
+			// 记录重试指标（不含首次执行）
+			if attempt > 0 {
+				recordJobRetry(ctx, j.jobName)
+			}
 			// 区分 job 自身错误和 context 取消
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				j.logf("warn", "[job] %s cancelled (attempt %d/%d): %v", j.jobName, attempt+1, cfg.MaxAttempts, ctx.Err())
@@ -56,7 +75,11 @@ func (j commandJob) Run() {
 		return err
 	})
 
+	duration := time.Since(start)
 	if lastErr != nil {
+		span.RecordError(lastErr)
+		span.SetStatus(codes.Error, lastErr.Error())
+		recordJobRun(ctx, j.jobName, "error", duration)
 		if errors.Is(lastErr, context.DeadlineExceeded) {
 			j.logf("error", "[job] %s timed out after %v", j.jobName, j.timeout)
 		} else if errors.Is(lastErr, context.Canceled) {
@@ -67,6 +90,9 @@ func (j commandJob) Run() {
 		if j.failedSaver != nil {
 			j.failedSaver(j.jobName, j.args, lastErr)
 		}
+	} else {
+		span.SetStatus(codes.Ok, "")
+		recordJobRun(ctx, j.jobName, "success", duration)
 	}
 }
 

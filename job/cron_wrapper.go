@@ -19,6 +19,7 @@ type cronJobWrapper struct {
 	log *slog.Logger
 }
 
+// NewCronJobWrapper 创建定时任务包装器，通过选项函数配置重试、超时、日志等
 func NewCronJobWrapper(opts ...WrapperOption) IWrapper {
 	w := &cronJobWrapper{}
 
@@ -29,6 +30,7 @@ func NewCronJobWrapper(opts ...WrapperOption) IWrapper {
 	return w
 }
 
+// FromCommandJob 将 ICommandJob 转换为 cron.Job，支持重试和超时控制
 func (w *cronJobWrapper) FromCommandJob(_ context.Context, job ICommandJob, args ...string) cron.Job {
 	name := "unknown"
 	if job != nil {

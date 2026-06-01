@@ -9,8 +9,10 @@ import (
 )
 
 const (
+	// ContextKey 自定义上下文在 gin.Context 中的存储键
 	ContextKey = "gomooth_http_context"
 
+	// RequestRawBodyDataKey 原始请求体数据在上下文中的存储键
 	RequestRawBodyDataKey = "request_raw_body"
 )
 

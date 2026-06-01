@@ -1,13 +1,17 @@
 package kafka
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/kafka/internal"
+	"github.com/stretchr/testify/assert"
 )
 
 type mockConsumerGroupSession struct {
@@ -82,4 +86,240 @@ func TestSyncRetry_Exhausted(t *testing.T) {
 	if len(session.marks) != 1 {
 		t.Errorf("expected 1 marked message after exhausted, got %d", len(session.marks))
 	}
+}
+
+func TestSyncRetry_SetFailedHandler(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return nil
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+
+	strategy.SetFailedHandler(FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+	}))
+	assert.NotNil(t, strategy.failedHandler)
+}
+
+func TestSyncRetry_SetDeadLetterHandler(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return nil
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+
+	dl := &testDeadLetterHandler{}
+	strategy.SetDeadLetterHandler(dl)
+	assert.NotNil(t, strategy.deadLetter)
+}
+
+func TestSyncRetry_SetSession(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return nil
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+	// SetSession is a no-op for sync strategy
+	strategy.SetSession(newMockSession())
+}
+
+func TestSyncRetry_ClearSession(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return nil
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+	// ClearSession is a no-op for sync strategy
+	strategy.ClearSession()
+}
+
+func TestSyncRetry_OnShutdown(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return nil
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+	// OnShutdown is a no-op for sync strategy
+	strategy.OnShutdown(context.Background())
+}
+
+func TestSyncRetry_ContextCancelled(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return errors.New("fail")
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 10,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	session := newMockSession()
+	msg := &sarama.ConsumerMessage{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello")}
+	strategy.OnMessage(ctx, session, msg)
+	// Should return early due to cancelled context
+}
+
+func TestSyncRetry_TotalTimeoutExceeded(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		time.Sleep(50 * time.Millisecond)
+		return errors.New("fail")
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 100,
+		&retry.ExponentialDelay{Base: 10 * time.Millisecond, Max: 100 * time.Millisecond},
+		100*time.Millisecond, // total timeout
+		nil, nil,
+	)
+
+	session := newMockSession()
+	msg := &sarama.ConsumerMessage{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello")}
+	strategy.OnMessage(context.Background(), session, msg)
+	// Should stop retrying after total timeout exceeded
+}
+
+func TestSyncRetry_ExhaustedWithDeadLetter(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return errors.New("always fail")
+	})
+
+	dl := &testDeadLetterHandler{}
+	strategy := newSyncRetryStrategy("test-group", handler, 1,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+	strategy.SetDeadLetterHandler(dl)
+
+	session := newMockSession()
+	msg := &sarama.ConsumerMessage{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello")}
+	strategy.OnMessage(context.Background(), session, msg)
+	assert.True(t, dl.called.Load())
+	// Dead letter handler succeeded -> exhaustedHandled -> MarkMessage
+	assert.Len(t, session.marks, 1)
+}
+
+func TestSyncRetry_ExhaustedWithDeadLetterFail(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return errors.New("always fail")
+	})
+
+	dl := &failingDeadLetterHandler{}
+	strategy := newSyncRetryStrategy("test-group", handler, 1,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+	strategy.SetDeadLetterHandler(dl)
+
+	session := newMockSession()
+	msg := &sarama.ConsumerMessage{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello")}
+	strategy.OnMessage(context.Background(), session, msg)
+	// Dead letter handler failed -> exhaustedFailed -> no MarkMessage
+	assert.Len(t, session.marks, 0)
+}
+
+func TestSyncRetry_ExhaustedWithFailedHandler(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return errors.New("always fail")
+	})
+
+	fhCalled := false
+	fh := FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+		fhCalled = true
+	})
+	strategy := newSyncRetryStrategy("test-group", handler, 1,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, nil, nil,
+	)
+	strategy.SetFailedHandler(fh)
+
+	session := newMockSession()
+	msg := &sarama.ConsumerMessage{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello")}
+	strategy.OnMessage(context.Background(), session, msg)
+	assert.True(t, fhCalled)
+	// Failed handler called -> exhaustedHandled -> MarkMessage
+	assert.Len(t, session.marks, 1)
+}
+
+func TestSyncRetry_ExhaustedWithLogger(t *testing.T) {
+	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+		return errors.New("always fail")
+	})
+
+	var buf bytes.Buffer
+	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	strategy := newSyncRetryStrategy("test-group", handler, 1,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, logger, nil,
+	)
+
+	session := newMockSession()
+	msg := &sarama.ConsumerMessage{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello")}
+	strategy.OnMessage(context.Background(), session, msg)
+	// Logger should have logged the error
+	assert.Contains(t, buf.String(), "event handle failed")
+}
+
+// ==================== handleExhausted 单独测试 ====================
+
+func TestHandleExhausted_WithDeadLetter_Success(t *testing.T) {
+	dl := &testDeadLetterHandler{}
+	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
+		dl, nil, nil, nil)
+	assert.Equal(t, exhaustedHandled, result)
+	assert.True(t, dl.called.Load())
+}
+
+func TestHandleExhausted_WithDeadLetter_Fail(t *testing.T) {
+	dl := &failingDeadLetterHandler{}
+	var buf bytes.Buffer
+	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
+		dl, nil, logger, nil)
+	assert.Equal(t, exhaustedFailed, result)
+}
+
+func TestHandleExhausted_WithFailedHandler(t *testing.T) {
+	fhCalled := false
+	fh := FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+		fhCalled = true
+	})
+	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
+		nil, fh, nil, nil)
+	assert.Equal(t, exhaustedHandled, result)
+	assert.True(t, fhCalled)
+}
+
+func TestHandleExhausted_WithLoggerOnly(t *testing.T) {
+	var buf bytes.Buffer
+	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
+		nil, nil, logger, nil)
+	assert.Equal(t, exhaustedHandled, result)
+	assert.Contains(t, buf.String(), "event handle failed")
+}
+
+func TestHandleExhausted_WithMetrics(t *testing.T) {
+	metrics := internal.NewConsumerMetrics()
+	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
+		nil, nil, nil, metrics)
+	assert.Equal(t, exhaustedHandled, result)
+	// Metrics OnDeadLetter should have been called
+}
+
+func TestHandleExhausted_NoDeadLetterNoFailedHandlerNoLogger(t *testing.T) {
+	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
+		nil, nil, nil, nil)
+	assert.Equal(t, exhaustedHandled, result)
 }

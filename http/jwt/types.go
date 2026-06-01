@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// IToken JWT Token 接口，提供令牌创建、配置、刷新和序列化能力
 type IToken interface {
 	// SetIssuer 设置 token 发行人，默认为 "gomooth/pkg"
 	SetIssuer(issuer string) IToken

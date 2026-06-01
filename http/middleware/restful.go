@@ -24,6 +24,7 @@ func RESTFul(version string) gin.HandlerFunc {
 	}
 }
 
+// IgnorePath 指定需要忽略 RESTful 标准检测的路由路径和请求方法
 type IgnorePath struct {
 	Path   string
 	Method string

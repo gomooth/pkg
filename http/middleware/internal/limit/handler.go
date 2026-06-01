@@ -6,15 +6,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 
 	"github.com/ulule/limiter/v3"
 )
 
-var limitMeter = metrics.GetProvider().Meter("limit")
+var limitMeter = telemetry.Meter("limit")
 
 var (
-	limitRejectedCounter = limitMeter.Int64Counter("limit.rejected")
+	limitRejectedCounter, _ = limitMeter.Int64Counter("limit.rejected")
 )
 
 // RateLimiter 创建限速器中间件

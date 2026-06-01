@@ -1,16 +1,25 @@
 package restful
 
 const (
-	PageLinkHeaderKey   = "Link"
-	PageInfoHeaderKey   = "X-Pagination-Info"
+	// PageLinkHeaderKey 分页链接响应头键名
+	PageLinkHeaderKey = "Link"
+	// PageInfoHeaderKey 分页信息响应头键名
+	PageInfoHeaderKey = "X-Pagination-Info"
+	// TotalCountHeaderKey 总记录数响应头键名
 	TotalCountHeaderKey = "X-PaginateTotal-Count"
-	HasMoreHeaderKey    = "X-More-Resource"
+	// HasMoreHeaderKey 是否有更多数据响应头键名
+	HasMoreHeaderKey = "X-More-Resource"
+	// NextCursorHeaderKey 下一页游标响应头键名
 	NextCursorHeaderKey = "X-Next-Cursor"
-	ErrorCodeHeaderKey  = "X-Error-Code"
-	ErrorDataHeaderKey  = "X-Error-Data"
-	LangHeaderKey       = "X-Language"
+	// ErrorCodeHeaderKey 错误码响应头键名
+	ErrorCodeHeaderKey = "X-Error-Code"
+	// ErrorDataHeaderKey 错误数据响应头键名
+	ErrorDataHeaderKey = "X-Error-Data"
+	// LangHeaderKey 语言响应头键名
+	LangHeaderKey = "X-Language"
 )
 
+// IResponse RESTful 标准响应接口，定义资源的 CRUD 及分页列表等响应方法
 type IResponse interface {
 	// SetHeader 设置请求头
 	SetHeader(key, value string) IResponse
@@ -46,6 +55,7 @@ type IResponse interface {
 	WithErrorData(err error, data any)
 }
 
+// TableResponse 表格分页响应数据结构
 type TableResponse struct {
 	TotalRow uint                          // 分页的记录条数
 	Columns  []string                      // 表格列
@@ -54,12 +64,14 @@ type TableResponse struct {
 	Extends  []*TableResponseRowExtendItem // 表格行扩展数据
 }
 
+// TableResponseItem 表格单元格数据
 type TableResponseItem struct {
 	Column string // 列
 	RowKey string // 行关键字
 	Data   any    // 数据
 }
 
+// TableResponseRowExtendItem 表格行扩展数据
 type TableResponseRowExtendItem struct {
 	RowKey string // 行关键字
 	Data   any    // 数据

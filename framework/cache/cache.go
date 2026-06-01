@@ -11,21 +11,22 @@ import (
 
 	"github.com/eko/gocache/lib/v4/cache"
 	"github.com/eko/gocache/lib/v4/store"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/utils/strutil"
 
 	"github.com/gomooth/xerror"
 )
 
-var cacheMeter = metrics.GetProvider().Meter("cache")
+var cacheMeter = telemetry.Meter("cache")
 
 var (
-	cacheHitCounter   = cacheMeter.Int64Counter("cache.hit")
-	cacheMissCounter  = cacheMeter.Int64Counter("cache.miss")
-	cacheSetCounter   = cacheMeter.Int64Counter("cache.set")
-	cacheEvictCounter = cacheMeter.Int64Counter("cache.evict")
+	cacheHitCounter, _   = cacheMeter.Int64Counter("cache.hit")
+	cacheMissCounter, _  = cacheMeter.Int64Counter("cache.miss")
+	cacheSetCounter, _   = cacheMeter.Int64Counter("cache.set")
+	cacheEvictCounter, _ = cacheMeter.Int64Counter("cache.evict")
 )
 
 // NeverExpire 永久缓存标记值，设置此值时缓存不会过期
@@ -91,6 +92,7 @@ type anyCache[T any] struct {
 	renewThreshold float64
 }
 
+// New 创建缓存实例，nameSpace 为命名空间用于 key 前缀隔离，cacheManager 为底层 gocache 管理器
 func New[T any](nameSpace string, cacheManager *cache.Cache[T], opts ...Option[T]) ICache[T] {
 	c := &anyCache[T]{
 		name:           nameSpace,
@@ -119,13 +121,13 @@ func (c *anyCache[T]) Get(ctx context.Context, key string) (*T, time.Duration, e
 	cacheData, d, err := c.cacheManager.GetWithTTL(ctx, key)
 	if err == nil {
 		cacheHitCounter.Add(ctx, 1, metric.WithAttributes(
-			metrics.Attr("namespace", c.name),
+			attribute.String("namespace", c.name),
 		))
 		return &cacheData, d, nil
 	}
 
 	cacheMissCounter.Add(ctx, 1, metric.WithAttributes(
-		metrics.Attr("namespace", c.name),
+		attribute.String("namespace", c.name),
 	))
 	return nil, 0, err
 }
@@ -176,7 +178,7 @@ func (c *anyCache[T]) Set(ctx context.Context, key string, val *T, expire time.D
 		if getErr != nil {
 			if c.itemCountFunc() >= c.maxItems {
 				cacheEvictCounter.Add(ctx, 1, metric.WithAttributes(
-					metrics.Attr("namespace", c.name),
+					attribute.String("namespace", c.name),
 				))
 				return xerror.New("cache: capacity limit reached")
 			}
@@ -184,7 +186,7 @@ func (c *anyCache[T]) Set(ctx context.Context, key string, val *T, expire time.D
 	}
 
 	cacheSetCounter.Add(ctx, 1, metric.WithAttributes(
-		metrics.Attr("namespace", c.name),
+		attribute.String("namespace", c.name),
 	))
 	return c.cacheManager.Set(ctx, key, *val, expireOpt)
 }

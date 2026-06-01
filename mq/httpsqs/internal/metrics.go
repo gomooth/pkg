@@ -3,7 +3,7 @@ package internal
 import (
 	"context"
 
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -11,18 +11,21 @@ const meterName = "github.com/gomooth/pkg/mq/httpsqs"
 
 // ConsumerMetrics 消费者指标收集器
 type ConsumerMetrics struct {
-	consumeCounter    metrics.Int64Counter
-	retryCounter      metrics.Int64Counter
-	deadLetterCounter metrics.Int64Counter
+	consumeCounter    metric.Int64Counter
+	retryCounter      metric.Int64Counter
+	deadLetterCounter metric.Int64Counter
 }
 
 // NewConsumerMetrics 创建消费者指标收集器
 func NewConsumerMetrics() *ConsumerMetrics {
-	m := metrics.GetProvider().Meter(meterName)
+	m := telemetry.Meter(meterName)
+	consumeCounter, _ := m.Int64Counter("httpsqs.consumer.messages", metric.WithDescription("Messages consumed successfully"))
+	retryCounter, _ := m.Int64Counter("httpsqs.consumer.retries", metric.WithDescription("Message retry attempts"))
+	deadLetterCounter, _ := m.Int64Counter("httpsqs.consumer.dead_letters", metric.WithDescription("Messages sent to dead letter"))
 	return &ConsumerMetrics{
-		consumeCounter:    m.Int64Counter("httpsqs.consumer.messages", metric.WithDescription("Messages consumed successfully")),
-		retryCounter:      m.Int64Counter("httpsqs.consumer.retries", metric.WithDescription("Message retry attempts")),
-		deadLetterCounter: m.Int64Counter("httpsqs.consumer.dead_letters", metric.WithDescription("Messages sent to dead letter")),
+		consumeCounter:    consumeCounter,
+		retryCounter:      retryCounter,
+		deadLetterCounter: deadLetterCounter,
 	}
 }
 

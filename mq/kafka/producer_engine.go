@@ -12,6 +12,7 @@ import (
 	"github.com/gomooth/pkg/framework/xcode"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 	"github.com/gomooth/xerror"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const (
@@ -129,9 +130,20 @@ func (e *producerEngine) Shutdown(ctx context.Context) error {
 }
 
 func (e *producerEngine) Produce(ctx context.Context, topic string, message []byte) error {
-	return e.send(ctx, []*sarama.ProducerMessage{
+	msgs := []*sarama.ProducerMessage{
 		{Topic: topic, Value: sarama.ByteEncoder(message)},
-	})
+	}
+	ctx, span := injectProducerTrace(ctx, topic, msgs)
+	defer span.End()
+
+	err := e.send(ctx, msgs)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	return err
 }
 
 func (e *producerEngine) ProduceBatch(ctx context.Context, topic string, messages ...[]byte) error {
@@ -145,7 +157,17 @@ func (e *producerEngine) ProduceBatch(ctx context.Context, topic string, message
 			Value: sarama.ByteEncoder(msg),
 		}
 	}
-	return e.send(ctx, msgs)
+	ctx, span := injectProducerTrace(ctx, topic, msgs)
+	defer span.End()
+
+	err := e.send(ctx, msgs)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	return err
 }
 
 func (e *producerEngine) ProduceOrdered(ctx context.Context, topic string, partitionKey []byte, messages ...[]byte) error {
@@ -160,7 +182,17 @@ func (e *producerEngine) ProduceOrdered(ctx context.Context, topic string, parti
 			Value: sarama.ByteEncoder(msg),
 		}
 	}
-	return e.send(ctx, msgs)
+	ctx, span := injectProducerTrace(ctx, topic, msgs)
+	defer span.End()
+
+	err := e.send(ctx, msgs)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	return err
 }
 
 func (e *producerEngine) send(ctx context.Context, msgs []*sarama.ProducerMessage) error {

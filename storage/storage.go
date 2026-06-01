@@ -38,6 +38,7 @@ func newTempStorage(opts ...func(*Option)) *storage {
 	}
 }
 
+// AppendDir 追加存储目录（链式调用）
 func (p *storage) AppendDir(dirs ...string) IPrivateStorage {
 	if p.err != nil {
 		return p
@@ -53,6 +54,7 @@ func (p *storage) AppendDir(dirs ...string) IPrivateStorage {
 	return p
 }
 
+// SetName 设置文件名（链式调用）
 func (p *storage) SetName(name string) IPrivateStorage {
 	if p.err != nil {
 		return p

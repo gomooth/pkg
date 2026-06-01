@@ -143,10 +143,13 @@ func (h *handler) filter() gin.HandlerFunc {
 		}
 
 		if err != nil {
+			logMsg := err.Error()
 			if xe, ok := err.(xerror.XError); ok {
-				err = xe.Unwrap()
+				if unwrapped := xe.Unwrap(); unwrapped != nil {
+					logMsg = unwrapped.Error()
+				}
 			}
-			slog.Error("xss handler error", slog.String("component", "xss"), slog.String("error", err.Error()))
+			slog.Error("xss handler error", slog.String("component", "xss"), slog.String("error", logMsg))
 			_ = ctx.AbortWithError(http.StatusBadRequest, fmt.Errorf("request content filtered"))
 			return
 		}

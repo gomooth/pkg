@@ -107,7 +107,11 @@ func (g *groupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim s
 				return nil
 			}
 			// P8 修复：此处不输出 "message claimed" 调试日志
-			g.strategy.OnMessage(session.Context(), session, msg)
+
+			// 从消息 headers 提取 trace context，创建消费者 Span
+			ctx, span := startConsumerSpan(session.Context(), msg)
+			g.strategy.OnMessage(ctx, session, msg)
+			span.End()
 		case <-session.Context().Done():
 			return nil
 		}

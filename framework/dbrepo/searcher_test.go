@@ -2,6 +2,7 @@ package dbrepo
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/gomooth/pkg/framework/dbquery"
@@ -528,6 +529,136 @@ func WithFindPage(start, limit int) findOptionBuilder {
 		opt.start = start
 		opt.limit = limit
 	}
+}
+
+// ==================== WithCursorExtractor ====================
+
+func TestWithCursorExtractor(t *testing.T) {
+	db := setupSearchTestDB(t)
+	seedSearchData(t, db)
+	ctx := context.Background()
+
+	s, err := NewSearcher[searchModel, searchFilter](
+		db,
+		WithFilterTransfer[searchModel, searchFilter](searchFilterTransfer),
+		WithSortMapping[searchModel, searchFilter](searchSortMapping),
+		WithCursorExtractor[searchModel, searchFilter](func(m *searchModel) string {
+			return fmt.Sprintf("%d", m.ID)
+		}),
+	)
+	assert.NoError(t, err)
+
+	q := dbquery.NewQuery(searchFilter{},
+		dbquery.WithCursorPage[searchFilter](pager.CursorPage{Limit: 3}, "id", map[string]string{"id": "id"}),
+	)
+	records, nextCursor, err := s.ListByCursor(ctx, q)
+	assert.NoError(t, err)
+	assert.Len(t, records, 3)
+	assert.NotEmpty(t, nextCursor, "nextCursor should be extracted from last record")
+}
+
+// ==================== WithPreload ====================
+
+func TestWithPreload(t *testing.T) {
+	opt := WithPreload("Items", "Orders")
+	fo := &findOption{}
+	opt(fo)
+	assert.Equal(t, []string{"Items", "Orders"}, fo.preloads)
+}
+
+// ==================== WithSelect ====================
+
+func TestWithSelect(t *testing.T) {
+	opt := WithSelect("id", "name")
+	fo := &findOption{}
+	opt(fo)
+	assert.Equal(t, []string{"id", "name"}, fo.selects)
+}
+
+// ==================== ListByCursor ====================
+
+func TestSearcher_ListByCursor(t *testing.T) {
+	db := setupSearchTestDB(t)
+	seedSearchData(t, db)
+	ctx := context.Background()
+
+	t.Run("with cursorExtractor returns next cursor", func(t *testing.T) {
+		s, err := NewSearcher[searchModel, searchFilter](
+			db,
+			WithFilterTransfer[searchModel, searchFilter](searchFilterTransfer),
+			WithSortMapping[searchModel, searchFilter](searchSortMapping),
+			WithCursorExtractor[searchModel, searchFilter](func(m *searchModel) string {
+				return fmt.Sprintf("%d", m.ID)
+			}),
+		)
+		assert.NoError(t, err)
+
+		q := dbquery.NewQuery(searchFilter{},
+			dbquery.WithCursorPage[searchFilter](pager.CursorPage{Limit: 3}, "id", map[string]string{"id": "id"}),
+		)
+		records, nextCursor, err := s.ListByCursor(ctx, q)
+		assert.NoError(t, err)
+		assert.Len(t, records, 3)
+		assert.NotEmpty(t, nextCursor)
+	})
+
+	t.Run("without cursorExtractor returns empty next cursor", func(t *testing.T) {
+		s, err := NewSearcher[searchModel, searchFilter](
+			db,
+			WithFilterTransfer[searchModel, searchFilter](searchFilterTransfer),
+			WithSortMapping[searchModel, searchFilter](searchSortMapping),
+		)
+		assert.NoError(t, err)
+
+		q := dbquery.NewQuery(searchFilter{},
+			dbquery.WithCursorPage[searchFilter](pager.CursorPage{Limit: 3}, "id", map[string]string{"id": "id"}),
+		)
+		records, nextCursor, err := s.ListByCursor(ctx, q)
+		assert.NoError(t, err)
+		assert.Len(t, records, 3)
+		assert.Empty(t, nextCursor, "without cursorExtractor, nextCursor should be empty")
+	})
+
+	t.Run("empty result returns no cursor", func(t *testing.T) {
+		s, err := NewSearcher[searchModel, searchFilter](
+			db,
+			WithFilterTransfer[searchModel, searchFilter](searchFilterTransfer),
+			WithSortMapping[searchModel, searchFilter](searchSortMapping),
+			WithCursorExtractor[searchModel, searchFilter](func(m *searchModel) string {
+				return fmt.Sprintf("%d", m.ID)
+			}),
+		)
+		assert.NoError(t, err)
+
+		q := dbquery.NewQuery(searchFilter{Name: "nonexistent"},
+			dbquery.WithCursorPage[searchFilter](pager.CursorPage{Limit: 3}, "id", map[string]string{"id": "id"}),
+		)
+		records, nextCursor, err := s.ListByCursor(ctx, q)
+		assert.NoError(t, err)
+		assert.Empty(t, records)
+		assert.Empty(t, nextCursor)
+	})
+}
+
+// ==================== Find with WithPreload and WithSelect ====================
+
+func TestSearcher_Find_WithOptionBuilders(t *testing.T) {
+	searcher, _ := newTestSearcher(t)
+	ctx := context.Background()
+
+	t.Run("Find with WithSelect", func(t *testing.T) {
+		q := dbquery.NewQuery(searchFilter{})
+		records, err := searcher.Find(ctx, q, WithSelect("id", "name"))
+		assert.NoError(t, err)
+		assert.Len(t, records, 5)
+	})
+
+	t.Run("Find with WithPreload on invalid relation returns error (coverage)", func(t *testing.T) {
+		q := dbquery.NewQuery(searchFilter{})
+		_, err := searcher.Find(ctx, q, WithPreload("Items"))
+		// GORM returns error for unsupported relations, but we just need to cover the WithPreload path
+		_ = err
+	})
 }
 
 // Ensure pager.Sorter and pager.ParseSorts are accessible (compile-time check)

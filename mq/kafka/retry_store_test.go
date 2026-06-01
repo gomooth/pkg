@@ -4,6 +4,10 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/gomooth/pkg/mq/kafka/internal"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMemoryRetryStore_ScheduleAndFetch(t *testing.T) {
@@ -193,4 +197,124 @@ func TestMemoryRetryStore_Notify(t *testing.T) {
 	if ch == nil {
 		t.Fatal("expected non-nil notify channel")
 	}
+}
+
+func TestMemoryRetryStore_RemovePending(t *testing.T) {
+	store := NewMemoryRetryStore()
+	now := time.Now()
+
+	item := &RetryItem{
+		Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello"),
+		Attempt: 1, NextRetryAt: now.Add(-1 * time.Second),
+	}
+	store.Schedule(context.Background(), item)
+
+	// RemovePending should clear pending state
+	store.RemovePending("test", 0, 1)
+
+	// Watermark should advance
+	wm, ok := store.Watermark("test", 0)
+	assert.True(t, ok)
+	assert.Equal(t, int64(1), wm)
+}
+
+func TestMemoryRetryStore_MarkSuccess_AdvancesWatermark(t *testing.T) {
+	store := NewMemoryRetryStore()
+
+	// Mark success without any pending items
+	store.MarkSuccess("test", 0, 5)
+	wm, ok := store.Watermark("test", 0)
+	assert.True(t, ok)
+	assert.Equal(t, int64(5), wm)
+}
+
+func TestMemoryRetryStore_ScheduleWithHeaders(t *testing.T) {
+	store := NewMemoryRetryStore()
+	now := time.Now()
+
+	item := &RetryItem{
+		Topic:     "test",
+		Partition: 0,
+		Offset:    1,
+		Value:     []byte("hello"),
+		Key:       []byte("key1"),
+		Headers: []HeaderKV{
+			{Key: "trace-id", Value: []byte("12345")},
+		},
+		Attempt:     1,
+		NextRetryAt: now.Add(-1 * time.Second),
+	}
+
+	err := store.Schedule(context.Background(), item)
+	require.NoError(t, err)
+
+	items, err := store.Fetch(context.Background(), now, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	assert.Equal(t, "test", items[0].Topic)
+	assert.Equal(t, []byte("hello"), items[0].Value)
+	assert.Equal(t, []byte("key1"), items[0].Key)
+	require.Len(t, items[0].Headers, 1)
+	assert.Equal(t, "trace-id", items[0].Headers[0].Key)
+	assert.Equal(t, []byte("12345"), items[0].Headers[0].Value)
+}
+
+func TestMemoryRetryStore_SignalNotify(t *testing.T) {
+	store := NewMemoryRetryStore()
+
+	// signalNotify should not block
+	store.signalNotify()
+
+	select {
+	case <-store.Notify():
+		// OK
+	default:
+		t.Error("expected notify signal")
+	}
+
+	// Second call should not block even if channel is full
+	store.signalNotify()
+}
+
+func TestErrRetryQueueFull(t *testing.T) {
+	err := ErrRetryQueueFull
+	assert.Equal(t, "retry queue is full", err.Error())
+}
+
+func TestWithMemoryLogger(t *testing.T) {
+	logger := internal.NewSlogLogger(newTestSlogLogger())
+	store := NewMemoryRetryStore(WithMemoryLogger(logger))
+	require.NotNil(t, store)
+}
+
+func TestMemoryRetryStore_MultiplePartitions(t *testing.T) {
+	store := NewMemoryRetryStore()
+	now := time.Now()
+
+	// Schedule items on different partitions
+	store.Schedule(context.Background(), &RetryItem{
+		Topic: "test", Partition: 0, Offset: 1, NextRetryAt: now.Add(-time.Second),
+	})
+	store.Schedule(context.Background(), &RetryItem{
+		Topic: "test", Partition: 1, Offset: 1, NextRetryAt: now.Add(-time.Second),
+	})
+
+	// Each partition should have independent watermarks
+	store.MarkSuccess("test", 0, 1)
+	wm0, ok0 := store.Watermark("test", 0)
+	assert.True(t, ok0)
+	assert.Equal(t, int64(1), wm0)
+
+	// Partition 1 still has pending item, watermark should be behind
+	wm1, ok1 := store.Watermark("test", 1)
+	assert.True(t, ok1)
+	assert.LessOrEqual(t, wm1, int64(0))
+}
+
+func TestMemoryRetryStore_FetchEmpty(t *testing.T) {
+	store := NewMemoryRetryStore()
+	items, err := store.Fetch(context.Background(), time.Now(), 10)
+	assert.NoError(t, err)
+	assert.Empty(t, items)
 }

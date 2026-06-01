@@ -1,10 +1,13 @@
 package dbquery
 
 import (
+	"regexp"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gomooth/pkg/framework/pager"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -480,5 +483,265 @@ func TestPageSpec(t *testing.T) {
 		q := NewQuery(testFilter{}, WithOffsetPage[testFilter](0, 20))
 		cp := CursorPageOf(q)
 		assert.Nil(t, cp)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// SQL 注入安全测试
+// ---------------------------------------------------------------------------
+
+// setupMockDB 创建基于 go-sqlmock 的 GORM DB，用于捕获生成的 SQL。
+func setupMockDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock) {
+	t.Helper()
+	sqlDB, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	db, err := gorm.Open(mysql.New(mysql.Config{
+		Conn:                      sqlDB,
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+	return db, mock
+}
+
+func TestSQLInjection_SortFieldWhiteList(t *testing.T) {
+	t.Run("strict mode rejects SQL injection in sort field", func(t *testing.T) {
+		// 攻击向量：排序字段包含 SQL 注入负载 "id; DROP TABLE users--"
+		// 预期防御：严格模式下返回错误，不生成任何 ORDER BY
+		mapping := NewSortMapping(WithSortFields("name", "status"), WithStrictSort(true))
+		spec := NewSortSpec([]pager.Sorter{{Field: "id; DROP TABLE users--", Sorted: pager.ASC}})
+		db := &gorm.DB{}
+		_, err := ApplySort(db, spec, mapping)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown sort field")
+	})
+
+	t.Run("lenient mode skips SQL injection in sort field", func(t *testing.T) {
+		// 攻击向量：排序字段包含 SQL 注入负载 "id; DROP TABLE users--"
+		// 预期防御：宽松模式下跳过该字段，不生成 ORDER BY
+		mapping := NewSortMapping(WithSortFields("name", "status"))
+		spec := NewSortSpec([]pager.Sorter{{Field: "id; DROP TABLE users--", Sorted: pager.ASC}})
+		db := &gorm.DB{}
+		result, err := ApplySort(db, spec, mapping)
+		assert.NoError(t, err)
+		// 非严格模式应跳过未知字段，result 不应包含额外排序
+		assert.NotNil(t, result)
+	})
+
+	t.Run("strict mode rejects SQL keyword as sort field", func(t *testing.T) {
+		// 攻击向量：使用 SQL 关键字 "SELECT" 作为排序字段
+		// 预期防御：严格模式下返回错误
+		mapping := NewSortMapping(WithSortFields("name"), WithStrictSort(true))
+		spec := NewSortSpec([]pager.Sorter{{Field: "SELECT", Sorted: pager.ASC}})
+		db := &gorm.DB{}
+		_, err := ApplySort(db, spec, mapping)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown sort field")
+	})
+
+	t.Run("lenient mode skips SQL keyword as sort field", func(t *testing.T) {
+		// 攻击向量：使用 SQL 关键字 "SELECT" 作为排序字段
+		// 预期防御：宽松模式下跳过该字段
+		mapping := NewSortMapping(WithSortFields("name"))
+		spec := NewSortSpec([]pager.Sorter{{Field: "SELECT", Sorted: pager.ASC}})
+		db := &gorm.DB{}
+		result, err := ApplySort(db, spec, mapping)
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+	})
+
+	t.Run("strict mode rejects sort field with semicolon", func(t *testing.T) {
+		// 攻击向量：排序字段包含分号 "name; DROP TABLE users"
+		// 预期防御：严格模式下返回错误
+		mapping := NewSortMapping(WithSortFields("name"), WithStrictSort(true))
+		spec := NewSortSpec([]pager.Sorter{{Field: "name; DROP TABLE users", Sorted: pager.ASC}})
+		db := &gorm.DB{}
+		_, err := ApplySort(db, spec, mapping)
+		assert.Error(t, err)
+	})
+
+	t.Run("strict mode rejects sort field with comment syntax", func(t *testing.T) {
+		// 攻击向量：排序字段包含 SQL 注释 "name--"
+		// 预期防御：严格模式下返回错误
+		mapping := NewSortMapping(WithSortFields("name"), WithStrictSort(true))
+		spec := NewSortSpec([]pager.Sorter{{Field: "name--", Sorted: pager.ASC}})
+		db := &gorm.DB{}
+		_, err := ApplySort(db, spec, mapping)
+		assert.Error(t, err)
+	})
+
+	t.Run("whitelisted field generates correct ORDER BY", func(t *testing.T) {
+		// 正常场景：白名单内字段应正确生成 ORDER BY
+		db, mock := setupMockDB(t)
+		mapping := NewSortMapping(WithSortFields("name", "status"))
+		spec := NewSortSpec([]pager.Sorter{{Field: "name", Sorted: pager.ASC}})
+
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `test_models`")).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+
+		result, err := ApplySort(db.Model(&testModel{}), spec, mapping)
+		assert.NoError(t, err)
+
+		var records []testModel
+		_ = result.Find(&records).Error
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("Resolve returns false for field with special characters", func(t *testing.T) {
+		// 验证 SortMapping.Resolve 对特殊字符的防御
+		mapping := NewSortMapping(WithSortFields("name", "status"))
+
+		attackVectors := []string{
+			"id; DROP TABLE users--",
+			"1 OR 1=1",
+			"name'; --",
+			"status UNION SELECT * FROM users",
+			"name\" OR \"1\"=\"1",
+			"status` WHERE 1=1 --",
+		}
+		for _, v := range attackVectors {
+			_, ok := mapping.Resolve(v)
+			assert.False(t, ok, "Resolve should reject attack vector: %q", v)
+		}
+	})
+}
+
+func TestSQLInjection_CursorPageColumnWhiteList(t *testing.T) {
+	t.Run("non-whitelisted column is skipped", func(t *testing.T) {
+		// 攻击向量：游标列名不在白名单中
+		// 预期防御：跳过游标条件，仅应用 LIMIT
+		db := setupTestDB(t)
+		seedTestData(t, db)
+
+		q := NewQuery(testFilter{},
+			WithCursorPage[testFilter](pager.CursorPage{Value: "1", Limit: 2}, "nonexistent", map[string]string{"id": "id"}),
+		)
+		result, err := Build(db.Model(&testModel{}), q,
+			WithFilterTransfer[testFilter](testFilterTransfer),
+			WithSortMapping[testFilter](NewSortMapping()),
+		)
+		assert.NoError(t, err)
+
+		var records []testModel
+		err = result.Find(&records).Error
+		assert.NoError(t, err)
+		assert.Len(t, records, 2)
+	})
+
+	t.Run("malicious column name is skipped", func(t *testing.T) {
+		// 攻击向量：游标列名包含 SQL 注入负载 "id; SELECT * FROM users"
+		// 预期防御：不在白名单中，跳过游标条件
+		db := setupTestDB(t)
+		seedTestData(t, db)
+
+		q := NewQuery(testFilter{},
+			WithCursorPage[testFilter](pager.CursorPage{Value: "1", Limit: 2}, "id; SELECT * FROM users", map[string]string{"id": "id"}),
+		)
+		result, err := Build(db.Model(&testModel{}), q,
+			WithFilterTransfer[testFilter](testFilterTransfer),
+			WithSortMapping[testFilter](NewSortMapping()),
+		)
+		assert.NoError(t, err)
+
+		var records []testModel
+		err = result.Find(&records).Error
+		assert.NoError(t, err)
+		assert.Len(t, records, 2)
+	})
+
+	t.Run("whitelisted column generates parameterized WHERE", func(t *testing.T) {
+		// 正常场景：白名单内列名应正确生成参数化 WHERE 子句
+		db, mock := setupMockDB(t)
+
+		page := &CursorPageSpec{
+			Page:   pager.CursorPage{Value: "100", Direction: pager.CursorAfter, Limit: 10},
+			Column: "id",
+			Fields: map[string]string{"id": "id"},
+		}
+		result := ApplyPage(db.Model(&testModel{}), page)
+
+		// 验证生成的 SQL 使用参数化查询（? 占位符）
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `test_models` WHERE id > ? AND `test_models`.`deleted_at` IS NULL ORDER BY id ASC LIMIT ?")).
+			WithArgs("100", 10).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+
+		var records []testModel
+		_ = result.Find(&records).Error
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("cursor before direction generates parameterized WHERE", func(t *testing.T) {
+		// 正常场景：向前翻页应生成参数化 WHERE + DESC
+		db, mock := setupMockDB(t)
+
+		page := &CursorPageSpec{
+			Page:   pager.CursorPage{Value: "50", Direction: pager.CursorBefore, Limit: 10},
+			Column: "id",
+			Fields: map[string]string{"id": "id"},
+		}
+		result := ApplyPage(db.Model(&testModel{}), page)
+
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `test_models` WHERE id < ? AND `test_models`.`deleted_at` IS NULL ORDER BY id DESC LIMIT ?")).
+			WithArgs("50", 10).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+
+		var records []testModel
+		_ = result.Find(&records).Error
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("malicious cursor value is parameterized safely", func(t *testing.T) {
+		// 攻击向量：游标值包含 SQL 注入负载 "1 OR 1=1"
+		// 预期防御：游标值通过参数化查询传递，不会影响 SQL 结构
+		db, mock := setupMockDB(t)
+
+		page := &CursorPageSpec{
+			Page:   pager.CursorPage{Value: "1 OR 1=1", Direction: pager.CursorAfter, Limit: 10},
+			Column: "id",
+			Fields: map[string]string{"id": "id"},
+		}
+		result := ApplyPage(db.Model(&testModel{}), page)
+
+		// SQL 结构应保持 "WHERE id > ?"，值 "1 OR 1=1" 作为参数安全传递
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `test_models` WHERE id > ? AND `test_models`.`deleted_at` IS NULL ORDER BY id ASC LIMIT ?")).
+			WithArgs("1 OR 1=1", 10).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+
+		var records []testModel
+		_ = result.Find(&records).Error
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestSQLInjection_PreloadPath(t *testing.T) {
+	t.Run("preload with special characters does not crash", func(t *testing.T) {
+		// 攻击向量：preload 名包含 SQL 特殊字符
+		// 预期防御：GORM Preload 接收关联名而非原始 SQL，特殊字符不会注入
+		db := setupTestDB(t)
+
+		// GORM 对无效关联名会返回错误（如 "record not found"），
+		// 但不会执行 SQL 注入
+		maliciousPreloads := []string{
+			"Items; DROP TABLE users--",
+			"Items UNION SELECT * FROM users",
+			"Items'; --",
+		}
+		for _, preload := range maliciousPreloads {
+			result := ApplyPreloads(db.Model(&testModel{}), []string{preload})
+			assert.NotNil(t, result, "ApplyPreloads should not crash for malicious preload: %q", preload)
+		}
+	})
+
+	t.Run("valid preload is applied without error", func(t *testing.T) {
+		// 正常场景：合法 preload 名正常应用
+		db := setupTestDB(t)
+		result := ApplyPreloads(db.Model(&testModel{}), []string{"Items"})
+		assert.NotNil(t, result)
+	})
+
+	t.Run("empty preloads list returns db unchanged", func(t *testing.T) {
+		// 边界场景：空 preload 列表
+		db := setupTestDB(t)
+		result := ApplyPreloads(db.Model(&testModel{}), []string{})
+		assert.NotNil(t, result)
 	})
 }

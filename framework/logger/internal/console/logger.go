@@ -4,9 +4,6 @@ import (
 	"log/slog"
 	"os"
 
-	"go.opentelemetry.io/contrib/bridges/otelslog"
-
-	"github.com/gomooth/pkg/framework/logger/internal/multihandler"
 	"github.com/gomooth/pkg/framework/logger/internal/sampling"
 	"github.com/gomooth/pkg/framework/logger/internal/trace"
 	"github.com/gomooth/pkg/framework/logger/internal/types"
@@ -34,12 +31,6 @@ func New(opts ...func(*types.Option)) *slog.Logger {
 
 	// 注入 trace_id / span_id
 	handler = &trace.Injector{Next: handler}
-
-	// OTLP 日志导出（opt-in）
-	if cnf.OTelLoggerProvider != nil {
-		otelHandler := otelslog.NewHandler("pkg/console", otelslog.WithLoggerProvider(cnf.OTelLoggerProvider))
-		handler = multihandler.New(handler, otelHandler)
-	}
 
 	return slog.New(handler)
 }

@@ -3,28 +3,29 @@ package internal
 import (
 	"context"
 
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"go.opentelemetry.io/otel/metric"
 )
 
 const meterName = "github.com/gomooth/pkg/mq/redis"
 
-// ── Consumer 指标 ──
-
 // ConsumerMetrics 消费者指标收集器
 type ConsumerMetrics struct {
-	consumeCounter    metrics.Int64Counter
-	retryCounter      metrics.Int64Counter
-	deadLetterCounter metrics.Int64Counter
+	consumeCounter    metric.Int64Counter
+	retryCounter      metric.Int64Counter
+	deadLetterCounter metric.Int64Counter
 }
 
 // NewConsumerMetrics 创建消费者指标收集器
 func NewConsumerMetrics() *ConsumerMetrics {
-	m := metrics.GetProvider().Meter(meterName)
+	m := telemetry.Meter(meterName)
+	consumeCounter, _ := m.Int64Counter("redis.consumer.messages", metric.WithDescription("Messages consumed successfully"))
+	retryCounter, _ := m.Int64Counter("redis.consumer.retries", metric.WithDescription("Message retry attempts"))
+	deadLetterCounter, _ := m.Int64Counter("redis.consumer.dead_letters", metric.WithDescription("Messages sent to dead letter"))
 	return &ConsumerMetrics{
-		consumeCounter:    m.Int64Counter("redis.consumer.messages", metric.WithDescription("Messages consumed successfully")),
-		retryCounter:      m.Int64Counter("redis.consumer.retries", metric.WithDescription("Message retry attempts")),
-		deadLetterCounter: m.Int64Counter("redis.consumer.dead_letters", metric.WithDescription("Messages sent to dead letter")),
+		consumeCounter:    consumeCounter,
+		retryCounter:      retryCounter,
+		deadLetterCounter: deadLetterCounter,
 	}
 }
 
@@ -46,20 +47,20 @@ func (m *ConsumerMetrics) OnDeadLetter() {
 	}
 }
 
-// ── Producer 指标 ──
-
 // ProducerMetrics 生产者指标收集器
 type ProducerMetrics struct {
-	produceCounter metrics.Int64Counter
-	errorCounter   metrics.Int64Counter
+	produceCounter metric.Int64Counter
+	errorCounter   metric.Int64Counter
 }
 
 // NewProducerMetrics 创建生产者指标收集器
 func NewProducerMetrics() *ProducerMetrics {
-	m := metrics.GetProvider().Meter(meterName)
+	m := telemetry.Meter(meterName)
+	produceCounter, _ := m.Int64Counter("redis.producer.messages", metric.WithDescription("Messages produced successfully"))
+	errorCounter, _ := m.Int64Counter("redis.producer.errors", metric.WithDescription("Produce errors"))
 	return &ProducerMetrics{
-		produceCounter: m.Int64Counter("redis.producer.messages", metric.WithDescription("Messages produced successfully")),
-		errorCounter:   m.Int64Counter("redis.producer.errors", metric.WithDescription("Produce errors")),
+		produceCounter: produceCounter,
+		errorCounter:   errorCounter,
 	}
 }
 

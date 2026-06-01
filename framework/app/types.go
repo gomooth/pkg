@@ -10,6 +10,7 @@ type IApp interface {
 	Shutdown(ctx context.Context) error
 }
 
+// IManager 应用生命周期管理器，负责注册、启动、关闭和健康检查
 type IManager interface {
 	// Register 注册应用
 	Register(app IApp)

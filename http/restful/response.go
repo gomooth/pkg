@@ -217,6 +217,7 @@ func (r *response) ListWithPagination(totalRow uint, entities any) {
 	r.ctx.AbortWithStatusJSON(http.StatusOK, nilSafeSlice(entities))
 }
 
+// ComputePaginateUri 计算分页 URI，设置 start 查询参数
 func (r *response) ComputePaginateUri(urls *url.URL, start int) string {
 	qs := urls.Query()
 	qs.Set("start", strconv.Itoa(start))

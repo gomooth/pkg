@@ -5,12 +5,14 @@ import (
 	"time"
 )
 
+// WithLogger 设置应用管理器的日志器，默认使用控制台日志
 func WithLogger(log *slog.Logger) func(*manager) {
 	return func(m *manager) {
 		m.log = log
 	}
 }
 
+// WithApp 注册一个应用实例到管理器
 func WithApp(app IApp) func(*manager) {
 	return func(m *manager) {
 		if m.apps == nil {

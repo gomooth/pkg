@@ -1,9 +1,11 @@
 package restful
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/gomooth/xerror"
 	"github.com/gomooth/xerror/xcode"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/text/language"
 )
 
 func init() {
@@ -569,4 +572,273 @@ func TestWithResponseShowXCode_OnlyListedVisible(t *testing.T) {
 	assert.Nil(t, err)
 	assert.NotContains(t, body2["message"], "sensitive info")
 	assert.Equal(t, xcode.InternalServerError.String(), body2["message"])
+}
+
+// --- ListWithCursor ---
+
+func TestListWithCursor_WithNextCursor(t *testing.T) {
+	w, c := newTestContext()
+	r := NewResponse(c)
+
+	items := []map[string]string{{"id": "1"}}
+	r.ListWithCursor("cursor_abc123", items)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "cursor_abc123", w.Header().Get(NextCursorHeaderKey))
+
+	var body []map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Len(t, body, 1)
+}
+
+func TestListWithCursor_EmptyCursor(t *testing.T) {
+	w, c := newTestContext()
+	r := NewResponse(c)
+
+	items := []map[string]string{{"id": "1"}}
+	r.ListWithCursor("", items)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	// Empty cursor should not set X-Next-Cursor header
+	assert.Equal(t, "", w.Header().Get(NextCursorHeaderKey))
+}
+
+func TestListWithCursor_NilSlice(t *testing.T) {
+	w, c := newTestContext()
+	r := NewResponse(c)
+
+	var items []map[string]string
+	r.ListWithCursor("next_page", items)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "next_page", w.Header().Get(NextCursorHeaderKey))
+	assert.JSONEq(t, `[]`, w.Body.String())
+}
+
+// --- WithResponseLanguageHeaderKey ---
+
+func TestWithResponseLanguageHeaderKey(t *testing.T) {
+	w, c := newTestContext()
+	c.Request.Header.Set("X-Language", "en-US")
+
+	r := NewResponse(c,
+		WithResponseErrorMsgHandler(
+			[]language.Tag{language.AmericanEnglish, language.SimplifiedChinese},
+			func(code int, lang language.Tag) string {
+				if lang == language.AmericanEnglish {
+					return "English error"
+				}
+				return ""
+			},
+		),
+	)
+
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Equal(t, "English error", body["message"])
+}
+
+// --- WithResponseLanguageHeaderKey with custom header key ---
+
+func TestWithResponseLanguageHeaderKey_CustomKey(t *testing.T) {
+	w, c := newTestContext()
+	c.Request.Header.Set("X-Custom-Lang", "en-US")
+
+	r := NewResponse(c,
+		WithResponseErrorMsgHandler(
+			[]language.Tag{language.AmericanEnglish},
+			func(code int, lang language.Tag) string {
+				if lang == language.AmericanEnglish {
+					return "custom header error"
+				}
+				return ""
+			},
+		),
+		WithResponseLanguageHeaderKey("X-Custom-Lang"), // override the key set by WithResponseErrorMsgHandler
+	)
+
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Equal(t, "custom header error", body["message"])
+}
+
+// --- WithResponseDefaultLanguage ---
+
+func TestWithResponseDefaultLanguage(t *testing.T) {
+	w, c := newTestContext()
+	// No Accept-Language header set
+
+	r := NewResponse(c,
+		WithResponseDefaultLanguage(language.AmericanEnglish),
+		WithResponseErrorMsgHandler(
+			[]language.Tag{language.AmericanEnglish},
+			func(code int, lang language.Tag) string {
+				if lang == language.AmericanEnglish {
+					return "English error message"
+				}
+				return ""
+			},
+		),
+	)
+
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Equal(t, "English error message", body["message"])
+}
+
+// --- WithResponseLogger ---
+
+func TestWithResponseLogger(t *testing.T) {
+	w, c := newTestContext()
+	logger := slog.Default()
+	r := NewResponse(c, WithResponseLogger(logger))
+
+	r.WithMessage("with custom logger")
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// --- WithResponseShowXCode empty call resets whitelist ---
+
+func TestWithResponseShowXCode_EmptyCallResetsWhitelist(t *testing.T) {
+	w, c := newTestContext()
+	// Call with no xcodes → empty whitelist = all visible
+	r := NewResponse(c, WithResponseShowXCode())
+
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Equal(t, "bad request", body["message"])
+}
+
+// --- WithErrorData with marshal error ---
+
+func TestWithErrorData_MarshalError(t *testing.T) {
+	w, c := newTestContext()
+	r := NewResponse(c)
+
+	// Pass a value that cannot be marshaled (channel is not JSON-serializable)
+	r.WithErrorData(errors.New("test"), make(chan int))
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Contains(t, body["message"], "marshal failed")
+}
+
+// --- detectLanguage: X-Language header ---
+
+func TestDetectLanguage_XLanguageHeader(t *testing.T) {
+	w, c := newTestContext()
+	c.Request.Header.Set("X-Language", "en-US")
+
+	r := NewResponse(c,
+		WithResponseErrorMsgHandler(
+			[]language.Tag{language.AmericanEnglish},
+			func(code int, lang language.Tag) string {
+				if lang == language.AmericanEnglish {
+					return "English message"
+				}
+				return ""
+			},
+		),
+	)
+
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Equal(t, "English message", body["message"])
+}
+
+// --- detectLanguage: invalid Accept-Language returns default language ---
+
+func TestDetectLanguage_InvalidAcceptLanguage(t *testing.T) {
+	w, c := newTestContext()
+	c.Request.Header.Set("Accept-Language", "!!invalid!!")
+
+	r := NewResponse(c,
+		WithResponseDefaultLanguage(language.AmericanEnglish),
+		WithResponseErrorMsgHandler(
+			[]language.Tag{language.AmericanEnglish},
+			func(code int, lang language.Tag) string {
+				return "fallback"
+			},
+		),
+	)
+
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	// Invalid Accept-Language should fall back to default language
+	assert.Equal(t, "fallback", body["message"])
+}
+
+// --- detectLanguage: no supported languages returns default ---
+
+func TestDetectLanguage_NoSupportedLanguages(t *testing.T) {
+	w, c := newTestContext()
+
+	r := NewResponse(c,
+		WithResponseDefaultLanguage(language.AmericanEnglish),
+	)
+
+	// With no supported languages and no msgHandler, detectLanguage returns defaultedLanguage
+	// But since no msgHandler, getErrorMsg returns the raw message
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "raw message"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Equal(t, "raw message", body["message"])
+}
+
+// --- rebuildRequestBody with cached body ---
+
+func TestRebuildRequestBody_WithCachedBody(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", bytes.NewBufferString(`{"key":"value"}`))
+
+	// Test that WithError works correctly even when httpcontext is not set up.
+	// rebuildRequestBody gracefully handles the case where MustParse returns an error.
+	r := NewResponse(c)
+	r.WithError(errors.New("test error"))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }

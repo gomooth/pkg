@@ -9,6 +9,7 @@ type clearOption struct {
 	tags []string
 }
 
+// ClearWithID 按主键 ID 清除缓存，可指定多个 ID
 func ClearWithID(id uint, others ...uint) func(*clearOption) {
 	return func(o *clearOption) {
 		vals := append([]uint{id}, others...)
@@ -25,6 +26,7 @@ func ClearWithID(id uint, others ...uint) func(*clearOption) {
 	}
 }
 
+// ClearWithKey 按缓存键清除缓存，可指定多个 key
 func ClearWithKey(key string, others ...string) func(*clearOption) {
 	return func(o *clearOption) {
 		vals := append([]string{key}, others...)
@@ -38,6 +40,7 @@ func ClearWithKey(key string, others ...string) func(*clearOption) {
 	}
 }
 
+// ClearWithTags 按标签清除缓存，可指定多个 tag
 func ClearWithTags(tag string, others ...string) func(*clearOption) {
 	return func(o *clearOption) {
 		vals := append([]string{tag}, others...)
@@ -51,6 +54,7 @@ func ClearWithTags(tag string, others ...string) func(*clearOption) {
 	}
 }
 
+// ClearWithAll 设置是否清除全部缓存，为 true 时忽略其他条件直接清空
 func ClearWithAll(all bool) func(*clearOption) {
 	return func(o *clearOption) {
 		if all {

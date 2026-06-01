@@ -8,6 +8,7 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
+// IsDuplicateEntry 判断是否为唯一约束冲突（重复条目）错误，支持 MySQL、PostgreSQL 和 SQLite
 func IsDuplicateEntry(err error) bool {
 	// MySQL
 	var mysqlErr *mysql.MySQLError

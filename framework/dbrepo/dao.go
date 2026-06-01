@@ -5,18 +5,19 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/xerror"
 	"github.com/gomooth/xerror/xcode"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"gorm.io/gorm"
 )
 
-var dbRepoMeter = metrics.GetProvider().Meter("dbrepo")
+var dbRepoMeter = telemetry.Meter("dbrepo")
 
 var (
-	dbRepoOperationCounter  = dbRepoMeter.Int64Counter("dbrepo.operation")
-	dbRepoOperationDuration = dbRepoMeter.Float64Histogram("dbrepo.operation.duration",
+	dbRepoOperationCounter, _  = dbRepoMeter.Int64Counter("dbrepo.operation")
+	dbRepoOperationDuration, _ = dbRepoMeter.Float64Histogram("dbrepo.operation.duration",
 		metric.WithUnit("s"))
 )
 
@@ -26,9 +27,9 @@ func recordDBRepoMetric(ctx context.Context, component, operation string, dur ti
 		result = "error"
 	}
 	attrs := metric.WithAttributes(
-		metrics.Attr("component", component),
-		metrics.Attr("operation", operation),
-		metrics.Attr("result", result),
+		attribute.String("component", component),
+		attribute.String("operation", operation),
+		attribute.String("result", result),
 	)
 	dbRepoOperationCounter.Add(ctx, 1, attrs)
 	dbRepoOperationDuration.Record(ctx, dur.Seconds(), attrs)

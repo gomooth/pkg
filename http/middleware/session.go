@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SessionOption 会话中间件的配置选项
 type SessionOption struct {
 	Path   string
 	Domain string

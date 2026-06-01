@@ -10,10 +10,15 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/pkg/mq/queue"
 	"github.com/gomooth/pkg/mq/redis/internal"
 	"github.com/gomooth/xerror"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -305,14 +310,33 @@ func (e *consumerEngine) consumeLoop(ctx context.Context, qc queueConsumer) {
 		// 成功获取消息，重置退避计数
 		attempt = 0
 
+		// Extract trace context
+		msgCtx := queue.ExtractTraceContext(ctx, result)
+
+		// Create consumer Span
+		tracer := telemetry.Tracer("mq.redis.consumer")
+		msgCtx, span := tracer.Start(msgCtx, fmt.Sprintf("%s consume", qc.queueName),
+			trace.WithAttributes(
+				attribute.String("messaging.system", "redis"),
+				attribute.String("messaging.destination", qc.queueName),
+			),
+			trace.WithSpanKind(trace.SpanKindConsumer),
+		)
+
 		// 处理消息
-		if err := qc.strategy.OnMessage(ctx, qc.queueName, []byte(result)); err != nil {
+		if err := qc.strategy.OnMessage(msgCtx, qc.queueName, []byte(result)); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			if ctx.Err() != nil {
+				span.End()
 				return
 			}
 			e.logger.Error("strategy.OnMessage returned error",
 				"queue", qc.queueName, "error", err)
+		} else {
+			span.SetStatus(codes.Ok, "")
 		}
+		span.End()
 	}
 }
 

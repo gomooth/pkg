@@ -12,6 +12,7 @@ func WithRoot(root string) func(*Option) {
 	return func(o *Option) { o.root = root }
 }
 
+// IStorage 文件存储基础接口，提供目录、路径和文件名查询
 type IStorage interface {
 	// Dir 获得文件存储的目录
 	Dir() (string, error)
@@ -21,6 +22,7 @@ type IStorage interface {
 	Filename() (string, error)
 }
 
+// IPrivateStorage 私有文件存储接口，支持追加目录和设置文件名
 type IPrivateStorage interface {
 	IStorage
 
@@ -30,6 +32,7 @@ type IPrivateStorage interface {
 	SetName(name string) IPrivateStorage
 }
 
+// IPublicStorage 公开文件存储接口，支持 URL 生成
 type IPublicStorage interface {
 	IStorage
 

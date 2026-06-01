@@ -12,20 +12,21 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/framework/metrics"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/pkg/http/middleware/internal/httpcache/store"
 	"github.com/gomooth/xerror"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
-var httpCacheMeter = metrics.GetProvider().Meter("httpcache")
+var httpCacheMeter = telemetry.Meter("httpcache")
 
 var (
-	httpCacheHitCounter    = httpCacheMeter.Int64Counter("httpcache.hit")
-	httpCacheMissCounter   = httpCacheMeter.Int64Counter("httpcache.miss")
-	httpCacheWriteCounter  = httpCacheMeter.Int64Counter("httpcache.write")
-	httpCacheErrorCounter  = httpCacheMeter.Int64Counter("httpcache.error")
+	httpCacheHitCounter, _    = httpCacheMeter.Int64Counter("httpcache.hit")
+	httpCacheMissCounter, _   = httpCacheMeter.Int64Counter("httpcache.miss")
+	httpCacheWriteCounter, _  = httpCacheMeter.Int64Counter("httpcache.write")
+	httpCacheErrorCounter, _  = httpCacheMeter.Int64Counter("httpcache.error")
 )
 
 type handler struct {
@@ -251,7 +252,7 @@ func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.Cache
 		}
 
 		if err != store.ErrorCacheMiss {
-			httpCacheErrorCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("phase", "get")))
+			httpCacheErrorCounter.Add(c.Request.Context(), 1, metric.WithAttributes(attribute.String("phase", "get")))
 			return nil, xerror.Wrapf(err, "get http cache failed, key=%s", cacheKey)
 		}
 
@@ -272,11 +273,11 @@ func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.Cache
 		// 保存缓存
 		resp := newCachedResponse(cacheWriter)
 		if err := h.store.Set(c.Request.Context(), cacheKey, resp, strategy.CacheDuration); err != nil {
-			httpCacheErrorCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("phase", "set")))
-			httpCacheWriteCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("result", "failure")))
+			httpCacheErrorCounter.Add(c.Request.Context(), 1, metric.WithAttributes(attribute.String("phase", "set")))
+			httpCacheWriteCounter.Add(c.Request.Context(), 1, metric.WithAttributes(attribute.String("result", "failure")))
 			return nil, xerror.Wrapf(err, "set http cache failed, key=%s", cacheKey)
 		}
-		httpCacheWriteCounter.Add(c.Request.Context(), 1, metric.WithAttributes(metrics.Attr("result", "success")))
+		httpCacheWriteCounter.Add(c.Request.Context(), 1, metric.WithAttributes(attribute.String("result", "success")))
 
 		// 从请求链中获取的数据，直接跳过。防止响应重复
 		h.debugf("not cache, save cache and redirect next, key=%s", cacheKey)

@@ -1,8 +1,6 @@
 package logger
 
 import (
-	"go.opentelemetry.io/otel/log"
-
 	"github.com/gomooth/pkg/framework/logger/internal/types"
 )
 
@@ -41,13 +39,6 @@ func WithFormat(format types.LogFormat) func(*types.Option) {
 func WithStdPrint(enabled bool) func(*types.Option) {
 	return func(o *types.Option) {
 		o.StdPrint = enabled
-	}
-}
-
-// WithOTelLoggerProvider 设置 OTel LoggerProvider，启用后日志将同时通过 OTLP 导出到 OTel Collector。
-func WithOTelLoggerProvider(provider log.LoggerProvider) func(*types.Option) {
-	return func(o *types.Option) {
-		o.OTelLoggerProvider = provider
 	}
 }
 
