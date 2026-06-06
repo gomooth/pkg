@@ -341,7 +341,7 @@ func TestDAO_WithBatchSize(t *testing.T) {
 	})
 
 	t.Run("custom batch size", func(t *testing.T) {
-		dao, err := NewDAO[testModel](db, WithBatchSize[testModel](10))
+		dao, err := NewDAO[testModel](db, WithBatchSize(10))
 		assert.NoError(t, err)
 
 		// 使用小批次大小创建记录
@@ -354,7 +354,7 @@ func TestDAO_WithBatchSize(t *testing.T) {
 	})
 
 	t.Run("WithBatchSize ignores zero or negative", func(t *testing.T) {
-		dao, err := NewDAO[testModel](db, WithBatchSize[testModel](0))
+		dao, err := NewDAO[testModel](db, WithBatchSize(0))
 		assert.NoError(t, err)
 
 		// batchSize=0 应保持默认值 100，不影响正常创建

@@ -110,11 +110,7 @@ func evalSymlinksPath(p string) (string, error) {
 }
 
 type public struct {
-	root []string
-
-	dirs []string
-	name string
-	err  error
+	baseStorage
 }
 
 func newPublic(opts ...func(*Option)) *public {
@@ -130,8 +126,10 @@ func newPublic(opts ...func(*Option)) *public {
 	}
 
 	return &public{
-		root: []string{root, "public"},
-		dirs: make([]string, 0),
+		baseStorage: baseStorage{
+			root: []string{root, "public"},
+			dirs: make([]string, 0),
+		},
 	}
 }
 
@@ -232,58 +230,14 @@ func (p *public) withURL(fileURL string) *public {
 
 // AppendDir 追加存储目录（链式调用）
 func (p *public) AppendDir(dirs ...string) IPublicStorage {
-	if p.err != nil {
-		return p
-	}
-	for _, d := range dirs {
-		if err := sanitizePath(d); err != nil {
-			p.err = err
-			return p
-		}
-	}
-	p.dirs = append(p.dirs, dirs...)
-
+	_ = p.appendDir(dirs...)
 	return p
 }
 
 // SetName 设置文件名（链式调用）
 func (p *public) SetName(name string) IPublicStorage {
-	if p.err != nil {
-		return p
-	}
-	if len(name) > 0 {
-		if err := sanitizePath(name); err != nil {
-			p.err = err
-			return p
-		}
-		p.name = name
-	}
-
+	_ = p.setName(name)
 	return p
-}
-
-func (p *public) Dir() (string, error) {
-	if p.err != nil {
-		return "", p.err
-	}
-	base := path.Join(p.root...)
-	return secureJoin(base, p.dirs...)
-}
-
-func (p *public) Filename() (string, error) {
-	if p.err != nil {
-		return "", p.err
-	}
-	return p.name, nil
-}
-
-func (p *public) Path() (string, error) {
-	if p.err != nil {
-		return "", p.err
-	}
-	base := path.Join(p.root...)
-	segments := append(p.dirs, p.name)
-	return secureJoin(base, segments...)
 }
 
 func (p *public) URL() (string, error) {

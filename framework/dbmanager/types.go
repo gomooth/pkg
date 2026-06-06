@@ -6,6 +6,10 @@ import "gorm.io/gorm"
 type IDatabaseManager interface {
 	// Register 注册数据库连接
 	Register(name string, dbc *gorm.DB) error
+	// Unregister 注销数据库连接
+	Unregister(name string) error
 	// Get 获取数据库连接
 	Get(name string) (*gorm.DB, error)
+	// CloseAll 关闭所有数据库连接
+	CloseAll() error
 }

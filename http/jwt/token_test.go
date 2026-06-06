@@ -95,18 +95,18 @@ func (m *mockStatefulStore) Clean(ctx context.Context, userID uint) error {
 // ---------------------------------------------------------------------------
 
 func TestNewToken_EmptySecret(t *testing.T) {
-	_, err := NewToken(nil, httpcontext.User{ID: 1, Name: "test"})
+	_, err := NewTokenBuilder(nil, httpcontext.User{ID: 1, Name: "test"}).Build()
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
 
-	_, err = NewToken([]byte{}, httpcontext.User{ID: 1, Name: "test"})
+	_, err = NewTokenBuilder([]byte{}, httpcontext.User{ID: 1, Name: "test"}).Build()
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
 }
 
 func TestNewStatefulToken_EmptySecret(t *testing.T) {
-	_, err := NewStatefulToken(nil, httpcontext.User{ID: 1, Name: "test"}, nil)
+	_, err := NewTokenBuilder(nil, httpcontext.User{ID: 1, Name: "test"}).WithStatefulStore(nil).Build()
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
 
-	_, err = NewStatefulToken([]byte{}, httpcontext.User{ID: 1, Name: "test"}, nil)
+	_, err = NewTokenBuilder([]byte{}, httpcontext.User{ID: 1, Name: "test"}).WithStatefulStore(nil).Build()
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
 }
 
@@ -116,7 +116,7 @@ func TestNewStatefulToken_EmptySecret(t *testing.T) {
 
 func TestToken_ToString_NoSecret(t *testing.T) {
 	// Create a token with secret then clear it to test the error path
-	tk, err := NewToken([]byte("secret"), httpcontext.User{ID: 1, Name: "test"})
+	tk, err := NewTokenBuilder([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}).Build()
 	require.Nil(t, err)
 
 	// Clear the secret via internal access (token is returned as IToken but underlying is *token)
@@ -128,8 +128,13 @@ func TestToken_ToString_NoSecret(t *testing.T) {
 }
 
 func TestToken_ToString_StatefulNoStore(t *testing.T) {
-	tk, err := NewStatefulToken([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}, nil)
+	store := newMockStatefulStore()
+	tk, err := NewTokenBuilder([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}).WithStatefulStore(store).Build()
 	require.Nil(t, err)
+
+	// Clear the stateful handler to test the error path
+	tokenImpl := tk.(*token)
+	tokenImpl.statefulHandler = nil
 
 	_, err = tk.ToString(context.Background())
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTTokenInvalid))
@@ -137,7 +142,7 @@ func TestToken_ToString_StatefulNoStore(t *testing.T) {
 
 func TestToken_ToString_StatefulWithStore(t *testing.T) {
 	store := newMockStatefulStore()
-	tk, err := NewStatefulToken([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}, store)
+	tk, err := NewTokenBuilder([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}).WithStatefulStore(store).Build()
 	require.Nil(t, err)
 
 	tokenStr, err := tk.ToString(context.Background())
@@ -153,7 +158,7 @@ func TestToken_ToString_StatefulStoreError(t *testing.T) {
 	store := newMockStatefulStore()
 	store.saveErr = errors.New("redis error")
 
-	tk, err := NewStatefulToken([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}, store)
+	tk, err := NewTokenBuilder([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}).WithStatefulStore(store).Build()
 	require.Nil(t, err)
 
 	_, err = tk.ToString(context.Background())
@@ -169,7 +174,7 @@ func TestToken_SetSigningMethod(t *testing.T) {
 	secret := []byte("test-secret-key")
 
 	t.Run("valid signing method", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 
 		result := tk.SetSigningMethod(jwt.SigningMethodHS512)
@@ -186,7 +191,7 @@ func TestToken_SetSigningMethod(t *testing.T) {
 	})
 
 	t.Run("nil signing method is ignored", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 
 		result := tk.SetSigningMethod(nil)
@@ -219,7 +224,7 @@ func TestToken_GetUser(t *testing.T) {
 				testRole("editor"),
 			},
 		}
-		tk, err := NewToken(secret, user)
+		tk, err := NewTokenBuilder(secret, user).Build()
 		require.Nil(t, err)
 
 		parsedUser, err := tk.GetUser(testRoleConvert)
@@ -230,7 +235,7 @@ func TestToken_GetUser(t *testing.T) {
 	})
 
 	t.Run("without roles", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 
 		parsedUser, err := tk.GetUser(testRoleConvert)
@@ -244,7 +249,7 @@ func TestToken_GetUser(t *testing.T) {
 			Name:  "test",
 			Roles: []httpcontext.IRole{testRole("admin")},
 		}
-		tk, err := NewToken(secret, user)
+		tk, err := NewTokenBuilder(secret, user).Build()
 		require.Nil(t, err)
 
 		_, err = tk.GetUser(testRoleConvertErr)
@@ -260,7 +265,7 @@ func TestToken_GetUser(t *testing.T) {
 				"dept": "engineering",
 			},
 		}
-		tk, err := NewToken(secret, user)
+		tk, err := NewTokenBuilder(secret, user).Build()
 		require.Nil(t, err)
 
 		parsedUser, err := tk.GetUser(testRoleConvert)
@@ -274,7 +279,7 @@ func TestToken_GetUser(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToken_IsExpired_NilExpiresAt(t *testing.T) {
-	tk, err := NewToken([]byte("secret"), httpcontext.User{ID: 1, Name: "test"})
+	tk, err := NewTokenBuilder([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}).Build()
 	require.Nil(t, err)
 
 	// Manually set ExpiresAt to nil
@@ -292,7 +297,7 @@ func TestToken_RefreshNear(t *testing.T) {
 	secret := []byte("test-secret-key")
 
 	t.Run("not near expiry - no refresh", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 
 		// Default is 24h, refreshNear with 1 minute should NOT trigger
@@ -303,7 +308,7 @@ func TestToken_RefreshNear(t *testing.T) {
 	})
 
 	t.Run("near expiry - should refresh", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 
 		// Set to expire in 5 minutes from now by adjusting the claims directly
@@ -320,7 +325,7 @@ func TestToken_RefreshNear(t *testing.T) {
 	})
 
 	t.Run("nil ExpiresAt - no panic", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 
 		tokenImpl := tk.(*token)
@@ -336,7 +341,7 @@ func TestToken_RefreshNear(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToken_SetData_EmptyKey(t *testing.T) {
-	tk, err := NewToken([]byte("secret"), httpcontext.User{ID: 1, Name: "test"})
+	tk, err := NewTokenBuilder([]byte("secret"), httpcontext.User{ID: 1, Name: "test"}).Build()
 	require.Nil(t, err)
 
 	// Empty key should be a no-op
@@ -344,7 +349,7 @@ func TestToken_SetData_EmptyKey(t *testing.T) {
 	assert.Equal(t, tk, result)
 
 	// SetData on token with no Extend map should create one
-	tk2, err := NewToken([]byte("secret"), httpcontext.User{ID: 2, Name: "test2"})
+	tk2, err := NewTokenBuilder([]byte("secret"), httpcontext.User{ID: 2, Name: "test2"}).Build()
 	require.Nil(t, err)
 	tokenImpl := tk2.(*token)
 	tokenImpl.claims.Extend = nil
@@ -385,7 +390,7 @@ func TestParseTokenWithSecret(t *testing.T) {
 	user := httpcontext.User{ID: 42, Account: "user1", Name: "User One"}
 
 	t.Run("valid token from header", func(t *testing.T) {
-		tk, err := NewToken(secret, user)
+		tk, err := NewTokenBuilder(secret, user).Build()
 		require.Nil(t, err)
 
 		tokenStr, err := tk.ToString(context.Background())
@@ -532,7 +537,7 @@ func TestParseTokenWithGinAndOption(t *testing.T) {
 	t.Run("valid token from header", func(t *testing.T) {
 		opt := NewOption(secret, testRoleConvert)
 
-		tk, err := NewToken(secret, httpcontext.User{ID: 7, Account: "opt-user", Name: "Opt User"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 7, Account: "opt-user", Name: "Opt User"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -571,7 +576,7 @@ func TestParseTokenWithGinAndOption(t *testing.T) {
 	t.Run("with leeway", func(t *testing.T) {
 		opt := NewOption(secret, testRoleConvert, WithLeeway(30*time.Second))
 
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -587,7 +592,7 @@ func TestParseTokenWithGinAndOption(t *testing.T) {
 	t.Run("with custom signing methods", func(t *testing.T) {
 		opt := NewOption(secret, testRoleConvert, WithSigningMethods("HS256"))
 
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -605,7 +610,7 @@ func TestParseTokenWithGinAndOption(t *testing.T) {
 		newSecret := []byte("new-secret-key-32-bytes-long!!!")
 
 		// Sign with old secret
-		tk, err := NewToken(oldSecret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(oldSecret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -636,7 +641,7 @@ func TestParseJWTUser(t *testing.T) {
 			Name:    "Admin",
 			Roles:   []httpcontext.IRole{testRole("admin")},
 		}
-		tk, err := NewToken(secret, user)
+		tk, err := NewTokenBuilder(secret, user).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -666,7 +671,7 @@ func TestParseJWTUser(t *testing.T) {
 	t.Run("expired token returns error", func(t *testing.T) {
 		opt := NewOption(secret, testRoleConvert)
 
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tk.SetDuration(-1 * time.Second)
 
@@ -698,7 +703,7 @@ func TestParseJWTUser(t *testing.T) {
 			Name:  "test",
 			Roles: []httpcontext.IRole{testRole("admin")},
 		}
-		tk, err := NewToken(secret, user)
+		tk, err := NewTokenBuilder(secret, user).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -721,7 +726,7 @@ func TestParseJWTUser(t *testing.T) {
 			Name:  "test",
 			Roles: []httpcontext.IRole{testRole("admin")},
 		}
-		tk, err := NewToken(secret, user)
+		tk, err := NewTokenBuilder(secret, user).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -760,7 +765,7 @@ func TestParseTokenWithSecret_Coverage(t *testing.T) {
 	})
 
 	t.Run("with leeway", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -771,7 +776,7 @@ func TestParseTokenWithSecret_Coverage(t *testing.T) {
 	})
 
 	t.Run("with custom signing methods", func(t *testing.T) {
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -848,7 +853,7 @@ func TestToken_FullRoundTrip(t *testing.T) {
 		},
 	}
 
-	tk, err := NewToken(secret, user)
+	tk, err := NewTokenBuilder(secret, user).Build()
 	require.Nil(t, err)
 
 	// Customize
@@ -884,7 +889,7 @@ func TestParseToken_LegacySecrets_Table(t *testing.T) {
 	newSecret := []byte("new-secret-key-32-bytes-long!!!")
 	otherSecret := []byte("other-secret-key-32-bytes-long!")
 
-	tk, err := NewToken(oldSecret, httpcontext.User{ID: 1, Name: "test"})
+	tk, err := NewTokenBuilder(oldSecret, httpcontext.User{ID: 1, Name: "test"}).Build()
 	require.Nil(t, err)
 	tokenStr, err := tk.ToString(context.Background())
 	require.Nil(t, err)
@@ -966,7 +971,7 @@ func TestParseTokenWithGinAndOption_QueryStringToken(t *testing.T) {
 			WithAllowQueryStringToken(true, "/api/v1/events"),
 		)
 
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -982,7 +987,7 @@ func TestParseTokenWithGinAndOption_QueryStringToken(t *testing.T) {
 			WithAllowQueryStringToken(true, "/api/v1/events"),
 		)
 
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -997,7 +1002,7 @@ func TestParseTokenWithGinAndOption_QueryStringToken(t *testing.T) {
 			WithAllowQueryStringToken(true),
 		)
 
-		tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 		require.Nil(t, err)
 		tokenStr, err := tk.ToString(context.Background())
 		require.Nil(t, err)
@@ -1038,7 +1043,7 @@ func TestXCodeMessages(t *testing.T) {
 
 func TestNewTokenDefaults(t *testing.T) {
 	secret := []byte("test-secret-key")
-	tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+	tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 	require.Nil(t, err)
 
 	tokenImpl := tk.(*token)
@@ -1055,7 +1060,7 @@ func TestNewStatefulTokenDefaults(t *testing.T) {
 	secret := []byte("test-secret-key")
 	store := newMockStatefulStore()
 
-	tk, err := NewStatefulToken(secret, httpcontext.User{ID: 1, Name: "test"}, store)
+	tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).WithStatefulStore(store).Build()
 	require.Nil(t, err)
 
 	tokenImpl := tk.(*token)
@@ -1069,7 +1074,7 @@ func TestNewStatefulTokenDefaults(t *testing.T) {
 
 func TestToken_IPSetByParser(t *testing.T) {
 	secret := []byte("test-secret-key")
-	tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test", IP: "192.168.1.1"})
+	tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test", IP: "192.168.1.1"}).Build()
 	require.Nil(t, err)
 
 	// IP from user is NOT stored in claims during creation
@@ -1088,7 +1093,7 @@ func TestToken_IPSetByParser(t *testing.T) {
 func TestParseTokenWithSecret_SetsClientIP(t *testing.T) {
 	secret := []byte("test-secret-key")
 
-	tk, err := NewToken(secret, httpcontext.User{ID: 1, Name: "test"})
+	tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).Build()
 	require.Nil(t, err)
 	tokenStr, err := tk.ToString(context.Background())
 	require.Nil(t, err)
@@ -1111,7 +1116,7 @@ func TestParseTokenWithSecret_SetsClientIP(t *testing.T) {
 func TestToken_Account(t *testing.T) {
 	secret := []byte("test-secret-key")
 	user := httpcontext.User{ID: 1, Account: "admin", Name: "Admin"}
-	tk, err := NewToken(secret, user)
+	tk, err := NewTokenBuilder(secret, user).Build()
 	require.Nil(t, err)
 
 	tokenStr, err := tk.ToString(context.Background())
@@ -1120,4 +1125,85 @@ func TestToken_Account(t *testing.T) {
 	c, err := parseToken(tokenStr, secret, nil, 0, nil)
 	require.Nil(t, err)
 	assert.Equal(t, "admin", c.Account)
+}
+
+// ---------------------------------------------------------------------------
+// TokenBuilder
+// ---------------------------------------------------------------------------
+
+func TestNewTokenBuilder(t *testing.T) {
+	secret := []byte("builder-test-secret-key-ok!")
+
+	t.Run("with options", func(t *testing.T) {
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).
+			WithIssuer("test-issuer").
+			WithExpiration(2 * time.Hour).
+			Build()
+		require.Nil(t, err)
+		assert.NotNil(t, tk)
+
+		tokenStr, err := tk.ToString(context.Background())
+		require.Nil(t, err)
+		assert.NotEmpty(t, tokenStr)
+
+		// Parse back and verify
+		c, err := parseToken(tokenStr, secret, nil, 0, nil)
+		require.Nil(t, err)
+		assert.Equal(t, "test-issuer", c.Issuer)
+		assert.Equal(t, uint(1), c.UserID)
+	})
+
+	t.Run("defaults only", func(t *testing.T) {
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 2, Name: "default"}).Build()
+		require.Nil(t, err)
+		assert.NotNil(t, tk)
+		assert.False(t, tk.IsExpired())
+		assert.False(t, tk.IsStateful())
+	})
+
+	t.Run("empty secret returns error", func(t *testing.T) {
+		_, err := NewTokenBuilder(nil, httpcontext.User{ID: 1, Name: "test"}).Build()
+		assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
+	})
+
+	t.Run("with extend data", func(t *testing.T) {
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).
+			WithExtendData("dept", "engineering").
+			Build()
+		require.Nil(t, err)
+
+		tokenStr, err := tk.ToString(context.Background())
+		require.Nil(t, err)
+
+		c, err := parseToken(tokenStr, secret, nil, 0, nil)
+		require.Nil(t, err)
+		assert.Equal(t, "engineering", c.Extend["dept"])
+	})
+
+	t.Run("with stateful store", func(t *testing.T) {
+		store := newMockStatefulStore()
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).
+			WithStatefulStore(store).
+			Build()
+		require.Nil(t, err)
+		assert.True(t, tk.IsStateful())
+
+		tokenStr, err := tk.ToString(context.Background())
+		require.Nil(t, err)
+		assert.NotEmpty(t, tokenStr)
+	})
+
+	t.Run("with signing method", func(t *testing.T) {
+		tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 1, Name: "test"}).
+			WithSigningMethod(jwt.SigningMethodHS512).
+			Build()
+		require.Nil(t, err)
+
+		tokenStr, err := tk.ToString(context.Background())
+		require.Nil(t, err)
+
+		c, err := parseToken(tokenStr, secret, nil, 0, []string{"HS512"})
+		require.Nil(t, err)
+		assert.Equal(t, uint(1), c.UserID)
+	})
 }

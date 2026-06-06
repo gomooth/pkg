@@ -50,3 +50,11 @@ func WithMaxAge(d time.Duration) Option {
 		}
 	}
 }
+
+// WithCORSAllowCredentials 设置是否允许携带凭证（Cookie、Authorization header）。
+// 默认 true。设为 false 时浏览器不会在跨域请求中发送凭证。
+func WithCORSAllowCredentials(enabled bool) Option {
+	return func(ch *handler) {
+		ch.allowCredentials = &enabled
+	}
+}

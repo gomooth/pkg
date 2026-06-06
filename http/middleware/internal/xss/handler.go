@@ -352,7 +352,12 @@ func (h *handler) filterFormData(ctx *gin.Context) error {
 	for key, v := range m {
 		var filteredVals []string
 		for _, item := range v {
-			filteredVals = append(filteredVals, url.QueryEscape(h.filterXSS(ctx.FullPath(), key, item)))
+			decoded, decErr := url.QueryUnescape(item)
+			if decErr != nil {
+				decoded = item
+			}
+			filtered := h.filterXSS(ctx.FullPath(), key, decoded)
+			filteredVals = append(filteredVals, url.QueryEscape(filtered))
 		}
 
 		if bf.Len() > 0 {
@@ -366,6 +371,16 @@ func (h *handler) filterFormData(ctx *gin.Context) error {
 	h.debugf("xss handler output x-form-data: %s\n", bf.String())
 	ctx.Request.Body = io.NopCloser(&bf)
 	return nil
+}
+
+// sanitizeFilename 过滤文件名中的 CRLF 和空字节，防止 HTTP 响应分割注入
+func sanitizeFilename(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == 0 {
+			return -1
+		}
+		return r
+	}, name)
 }
 
 func (h *handler) filterMultiPartFormData(ctx *gin.Context) error {
@@ -418,7 +433,7 @@ func (h *handler) filterMultiPartFormData(ctx *gin.Context) error {
 		if part.FileName() != "" {
 			// Content-Disposition: form-data; name="file"; filename="文件.zip"
 			bf.WriteString(` filename="`)
-			bf.WriteString(part.FileName())
+			bf.WriteString(sanitizeFilename(part.FileName()))
 			bf.WriteString("\";\r\n")
 
 			// Content-Type: application/octet-stream

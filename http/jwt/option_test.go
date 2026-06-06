@@ -89,3 +89,20 @@ func TestNewOption_MultipleOptions(t *testing.T) {
 	assert.Equal(t, [][]byte{[]byte("old")}, opt.LegacySecrets())
 	assert.Equal(t, []string{"RS256"}, opt.SigningMethods())
 }
+
+func TestOption_Secret_ReturnsCopy(t *testing.T) {
+	original := []byte("test-secret-key")
+	opt := NewOption(original, mockTestRoleConvert)
+
+	returned := opt.Secret()
+	assert.Equal(t, original, returned)
+
+	// Modify returned value should not affect original
+	returned[0] = 'X'
+	assert.NotEqual(t, original, returned)
+	assert.Equal(t, []byte("test-secret-key"), opt.Secret())
+
+	// Multiple calls return different addresses
+	second := opt.Secret()
+	assert.NotEqual(t, &returned[0], &second[0])
+}

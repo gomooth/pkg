@@ -37,3 +37,15 @@ func WrapWithTimeout(d time.Duration) WrapperOption {
 		}
 	}
 }
+
+// PanicHandlerFunc 定义 panic 恢复处理函数
+type PanicHandlerFunc func(recover any)
+
+// WrapWithPanicHandler 设置 panic 恢复处理器
+func WrapWithPanicHandler(fn PanicHandlerFunc) WrapperOption {
+	return func(job *cronJobWrapper) {
+		if fn != nil {
+			job.panicHandler = fn
+		}
+	}
+}

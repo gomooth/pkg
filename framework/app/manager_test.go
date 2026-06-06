@@ -332,3 +332,80 @@ func TestManager_Register(t *testing.T) {
 	mgr := m.(*manager)
 	assert.Len(t, mgr.apps, 2)
 }
+
+func TestManager_ShutdownUsesBackgroundContext(t *testing.T) {
+	// Verify that the cleanup shutdown context is derived from context.Background(),
+	// not from the parent ctx passed to Run(). When the parent ctx is cancelled,
+	// the shutdown timeout should still function independently.
+	var capturedShutdownCtx context.Context
+	var wasAlreadyDone bool
+	ctxApp := &ctxCaptureApp2{
+		captured:     &capturedShutdownCtx,
+		capturedDone: &wasAlreadyDone,
+	}
+
+	m := NewManager()
+	m.Register(ctxApp)
+	m.Register(&trackableApp{startErr: errors.New("fail")})
+
+	// Use an already-cancelled context to prove shutdown ctx is independent
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_ = m.Run(cancelledCtx)
+
+	assert.NotNil(t, capturedShutdownCtx, "shutdown context should have been captured")
+	assert.False(t, wasAlreadyDone, "shutdown context should NOT be cancelled at Shutdown call time (derived from Background, not cancelled parent)")
+}
+
+type ctxCaptureApp2 struct {
+	captured     *context.Context
+	capturedDone *bool // true if ctx was already done at Shutdown call time
+}
+
+func (c *ctxCaptureApp2) Start(_ context.Context) error { return nil }
+func (c *ctxCaptureApp2) Shutdown(ctx context.Context) error {
+	*c.captured = ctx
+	done := ctx.Err() != nil
+	*c.capturedDone = done
+	return nil
+}
+
+func TestManager_SignalShutdownUsesBackgroundContext(t *testing.T) {
+	// Verify the signal-based shutdown path also uses Background context.
+	// We start the manager with a cancelled context, then send SIGTERM.
+	// The shutdown ctx passed to apps should not be tied to the cancelled parent.
+	var capturedShutdownCtx context.Context
+	var wasAlreadyDone bool
+	ctxApp := &ctxCaptureApp2{
+		captured:     &capturedShutdownCtx,
+		capturedDone: &wasAlreadyDone,
+	}
+
+	m := NewManager(WithApp(ctxApp))
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		p, _ := os.FindProcess(os.Getpid())
+		_ = p.Signal(os.Interrupt)
+	}()
+
+	// Use a cancelled context as the parent to prove independence
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- m.Run(cancelledCtx)
+	}()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not complete within timeout")
+	}
+
+	assert.NotNil(t, capturedShutdownCtx, "shutdown context should have been captured during signal shutdown")
+	assert.False(t, wasAlreadyDone, "shutdown context should NOT be cancelled at Shutdown call time (derived from Background, not cancelled parent)")
+}

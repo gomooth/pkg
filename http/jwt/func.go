@@ -33,6 +33,7 @@ func ParseTokenWithGinAndOption(ctx *gin.Context, opt *Option) (string, IToken, 
 	c.IP = ctx.ClientIP()
 	tk := newTokenWith(c)
 	tk.secret = opt.Secret()
+	tk.leeway = opt.Leeway()
 	return tokenStr, tk, nil
 }
 

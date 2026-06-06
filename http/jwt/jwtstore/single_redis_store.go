@@ -2,7 +2,6 @@ package jwtstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -55,13 +54,13 @@ var singleRemoveScript = redis.NewScript(`
 var singleCheckScript = redis.NewScript(`
 	local val = redis.call('GET', KEYS[1])
 	if val == false then
-		return redis.error_reply('NOT_FOUND')
+		return -1
 	end
 	-- 注意：~= 是非常量时间比较，理论上存在时序攻击风险。
 	-- 但由于存储的已经是 SHA256 哈希值（非原始 token），攻击者需先破解哈希才能利用时序差，
 	-- 实际攻击难度极高。若需进一步加固，可改用 HMAC-SHA256 对哈希值做二次处理。
 	if val ~= ARGV[1] then
-		return redis.error_reply('MISMATCH')
+		return -2
 	end
 	return 1
 `)
@@ -85,18 +84,20 @@ func (s *singleRedisStore) Check(ctx context.Context, userID uint, token string)
 	}
 
 	key := s.getKey(userID)
-	_, err := singleCheckScript.Run(ctx, s.client, []string{key}, s.hashFunc(token)).Result()
+	result, err := singleCheckScript.Run(ctx, s.client, []string{key}, s.hashFunc(token)).Int64()
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return xerror.NewXCode(xcode.ErrJWTTokenRevoked, "jwtstore: token not found or revoked")
-		}
-		// Lua 脚本返回 MISMATCH 也视为已撤销
-		if err.Error() == "MISMATCH" {
-			return xerror.NewXCode(xcode.ErrJWTTokenRevoked, "jwtstore: token mismatch, token revoked by newer login")
-		}
 		return err
 	}
-	return nil
+	switch result {
+	case 1:
+		return nil
+	case -1:
+		return xerror.NewXCode(xcode.ErrJWTTokenRevoked, "jwtstore: token not found or revoked")
+	case -2:
+		return xerror.NewXCode(xcode.ErrJWTTokenRevoked, "jwtstore: token mismatch, token revoked by newer login")
+	default:
+		return xerror.NewXCode(xcode.ErrJWTTokenInvalid, fmt.Sprintf("jwtstore: unexpected check result %d", result))
+	}
 }
 
 func (s *singleRedisStore) Remove(ctx context.Context, userID uint, token string) error {

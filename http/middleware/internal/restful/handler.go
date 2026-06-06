@@ -34,7 +34,7 @@ func (h handler) Handle() error {
 }
 
 func (h handler) parseAccept() error {
-	stx, err := httpcontext.MustParse(h.ctx)
+	stx, err := httpcontext.Parse(h.ctx)
 	if err != nil {
 		return err
 	}

@@ -41,11 +41,30 @@ func TestExponentialDelay_MaxCap(t *testing.T) {
 }
 
 func TestExponentialDelay_OverflowProtection(t *testing.T) {
-	s := &ExponentialDelay{Base: time.Second, Max: time.Hour}
-	// attempt > 30 should be capped at 2^30, not overflow
-	assert.NotPanics(t, func() {
-		d := s.Delay(50)
-		assert.Equal(t, time.Hour, d) // 2^30s > 1h, so capped
+	t.Run("Max=0 Base=1s high attempt does not return negative", func(t *testing.T) {
+		d := &ExponentialDelay{Base: time.Second, Max: 0}
+		for attempt := uint(0); attempt <= 63; attempt++ {
+			result := d.Delay(attempt)
+			assert.GreaterOrEqual(t, result, time.Duration(0), "attempt=%d should not return negative duration", attempt)
+		}
+	})
+
+	t.Run("Max=5s limits to Max", func(t *testing.T) {
+		d := &ExponentialDelay{Base: time.Second, Max: 5 * time.Second}
+		result := d.Delay(10)
+		assert.LessOrEqual(t, result, 5*time.Second)
+	})
+
+	t.Run("Max=0 Base=0 returns 0", func(t *testing.T) {
+		d := &ExponentialDelay{Base: 0, Max: 0}
+		result := d.Delay(5)
+		assert.Equal(t, time.Duration(0), result)
+	})
+
+	t.Run("overflow falls back to Max when Max>0", func(t *testing.T) {
+		d := &ExponentialDelay{Base: time.Hour, Max: time.Minute}
+		result := d.Delay(63)
+		assert.Equal(t, time.Minute, result, "overflow should fall back to Max")
 	})
 }
 

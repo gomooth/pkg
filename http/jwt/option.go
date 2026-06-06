@@ -83,10 +83,27 @@ func WithSigningMethods(methods ...string) func(*Option) {
 
 func (o *Option) RoleConvert() httpcontext.ToRole     { return o.roleConvert }
 func (o *Option) RefreshDuration() time.Duration      { return o.refreshDuration }
-func (o *Option) Secret() []byte                      { return o.secret }
+func (o *Option) Secret() []byte {
+	if o.secret == nil {
+		return nil
+	}
+	cp := make([]byte, len(o.secret))
+	copy(cp, o.secret)
+	return cp
+}
 func (o *Option) SilentMode() bool                    { return o.silentMode }
 func (o *Option) AllowQueryStringToken() bool         { return o.allowQueryStringToken }
 func (o *Option) QueryStringTokenPaths() []string     { return o.queryStringTokenPaths }
 func (o *Option) Leeway() time.Duration               { return o.leeway }
-func (o *Option) LegacySecrets() [][]byte             { return o.legacySecrets }
+func (o *Option) LegacySecrets() [][]byte {
+	if o.legacySecrets == nil {
+		return nil
+	}
+	cp := make([][]byte, len(o.legacySecrets))
+	for i, s := range o.legacySecrets {
+		cp[i] = make([]byte, len(s))
+		copy(cp[i], s)
+	}
+	return cp
+}
 func (o *Option) SigningMethods() []string            { return o.signingMethods }

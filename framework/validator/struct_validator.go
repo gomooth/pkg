@@ -24,7 +24,10 @@ func (sv *StructValidator) Validate() error {
 	if sv.data == nil {
 		return xerror.New("validator: data is nil")
 	}
-	return sv.validate.Struct(sv.data)
+	if err := sv.validate.Struct(sv.data); err != nil {
+		return xerror.Wrap(err, "validator: validation failed")
+	}
+	return nil
 }
 
 // Engine 返回底层验证引擎，用于自定义配置

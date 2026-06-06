@@ -18,6 +18,7 @@ type token struct {
 	issuedAt *time.Time    // 发行时间
 	duration time.Duration // 有效时长
 	secret   []byte        // 加密密钥
+	leeway   time.Duration // 过期容差，IsExpired 时向前偏移
 
 	signingMethod jwt.SigningMethod // 签名方法，默认 HS256
 
@@ -31,46 +32,6 @@ func rolesFromUser(user httpcontext.User) []string {
 		jwtRoles = append(jwtRoles, user.Roles[i].String())
 	}
 	return jwtRoles
-}
-
-// NewToken 初始化 Token
-// secret 为加密密钥，不能为空，否则返回错误。
-// 默认发行人为 "gomooth/pkg"，可以通过 SetIssuer 修改；
-// 默认有效期为 24h，可以通过 SetDuration 设置有效时长。
-func NewToken(secret []byte, user httpcontext.User) (IToken, error) {
-	if len(secret) == 0 {
-		return nil, xerror.NewXCode(xcode.ErrJWTSecretNotSet, "jwt: secret must not be empty")
-	}
-
-	t := newTokenWith(&claims{
-		Account: user.Account,
-		UserID:  user.ID,
-		Name:    user.Name,
-		Roles:   rolesFromUser(user),
-		Extend:  user.Extend,
-	})
-	t.secret = secret
-	return t, nil
-}
-
-// NewStatefulToken 初始化有状态的 Token
-// secret 为加密密钥，不能为空，否则返回错误。
-func NewStatefulToken(secret []byte, user httpcontext.User, handler StatefulStore) (IToken, error) {
-	if len(secret) == 0 {
-		return nil, xerror.NewXCode(xcode.ErrJWTSecretNotSet, "jwt: secret must not be empty")
-	}
-
-	t := newTokenWith(&claims{
-		Stateful: true,
-		Account:  user.Account,
-		UserID:   user.ID,
-		Name:     user.Name,
-		Roles:    rolesFromUser(user),
-		Extend:   user.Extend,
-	})
-	t.statefulHandler = handler
-	t.secret = secret
-	return t, nil
 }
 
 func newTokenWith(c *claims) *token {
@@ -89,6 +50,100 @@ func newTokenWith(c *claims) *token {
 		duration:      d,
 		signingMethod: jwt.SigningMethodHS256,
 	}
+}
+
+// TokenBuilder 用于链式构造 IToken 实例
+type TokenBuilder struct {
+	secret          []byte
+	user            httpcontext.User
+	issuer          string
+	duration        time.Duration
+	signingMethod   jwt.SigningMethod
+	statefulHandler StatefulStore
+	extend          map[string]string
+}
+
+// NewTokenBuilder 创建 Token 构建器。
+// secret 为加密密钥，不能为空；user 为 token 关联的用户信息。
+func NewTokenBuilder(secret []byte, user httpcontext.User) *TokenBuilder {
+	return &TokenBuilder{
+		secret: secret,
+		user:   user,
+	}
+}
+
+// WithIssuer 设置签发者，默认为 "gomooth/pkg"
+func (b *TokenBuilder) WithIssuer(issuer string) *TokenBuilder {
+	b.issuer = issuer
+	return b
+}
+
+// WithExpiration 设置 Token 过期时间
+func (b *TokenBuilder) WithExpiration(d time.Duration) *TokenBuilder {
+	b.duration = d
+	return b
+}
+
+// WithSigningMethod 设置签名方法，默认为 HS256
+func (b *TokenBuilder) WithSigningMethod(m jwt.SigningMethod) *TokenBuilder {
+	b.signingMethod = m
+	return b
+}
+
+// WithStatefulStore 设置 Token 状态存储后端，设置后 token 为有状态
+func (b *TokenBuilder) WithStatefulStore(store StatefulStore) *TokenBuilder {
+	b.statefulHandler = store
+	return b
+}
+
+// WithExtendData 设置扩展数据
+func (b *TokenBuilder) WithExtendData(key, val string) *TokenBuilder {
+	if b.extend == nil {
+		b.extend = make(map[string]string)
+	}
+	b.extend[key] = val
+	return b
+}
+
+// Build 构建 IToken 实例。若 secret 为空则返回错误。
+func (b *TokenBuilder) Build() (IToken, error) {
+	if len(b.secret) == 0 {
+		return nil, xerror.NewXCode(xcode.ErrJWTSecretNotSet, "jwt: secret must not be empty")
+	}
+
+	isStateful := b.statefulHandler != nil
+	c := &claims{
+		Stateful: isStateful,
+		Account:  b.user.Account,
+		UserID:   b.user.ID,
+		Name:     b.user.Name,
+		Roles:    rolesFromUser(b.user),
+		Extend:   b.user.Extend,
+	}
+	if len(b.extend) > 0 {
+		if c.Extend == nil {
+			c.Extend = make(map[string]string, len(b.extend))
+		}
+		for k, v := range b.extend {
+			c.Extend[k] = v
+		}
+	}
+
+	t := newTokenWith(c)
+	t.secret = b.secret
+	t.statefulHandler = b.statefulHandler
+
+	if b.issuer != "" {
+		t.SetIssuer(b.issuer)
+	}
+	if b.duration > 0 {
+		t.SetDuration(b.duration)
+	}
+	if b.signingMethod != nil {
+		t.SetSigningMethod(b.signingMethod)
+	}
+
+	return t, nil
 }
 
 // SetIssuer 设置 token 发行人，默认为 "gomooth/pkg"
@@ -165,11 +220,12 @@ func (t *token) IsStateful() bool {
 }
 
 // IsExpired 是否过期
+// leeway > 0 时，过期判定会提前 leeway 时长，避免时钟偏移导致的误判
 func (t *token) IsExpired() bool {
 	if t.claims.ExpiresAt == nil {
 		return true
 	}
-	return time.Now().After(t.claims.ExpiresAt.Time)
+	return time.Now().After(t.claims.ExpiresAt.Time.Add(-t.leeway))
 }
 
 // Refresh 刷新 token

@@ -13,13 +13,27 @@ import (
 	"gorm.io/gorm"
 )
 
-var dbRepoMeter = telemetry.Meter("dbrepo")
-
 var (
-	dbRepoOperationCounter, _  = dbRepoMeter.Int64Counter("dbrepo.operation")
-	dbRepoOperationDuration, _ = dbRepoMeter.Float64Histogram("dbrepo.operation.duration",
-		metric.WithUnit("s"))
+	dbRepoOperationCounter  metric.Int64Counter
+	dbRepoOperationDuration metric.Float64Histogram
 )
+
+// daoOptionTarget DAO 选项的内部接口
+type daoOptionTarget interface {
+	setBatchSize(int)
+}
+
+// DAOOption DAO 选项函数（非泛型）
+type DAOOption func(daoOptionTarget)
+
+func init() {
+	telemetry.OnProviderSet(func() {
+		m := telemetry.Meter("dbrepo")
+		dbRepoOperationCounter, _ = m.Int64Counter("dbrepo.operation")
+		dbRepoOperationDuration, _ = m.Float64Histogram("dbrepo.operation.duration",
+			metric.WithUnit("s"))
+	})
+}
 
 func recordDBRepoMetric(ctx context.Context, component, operation string, dur time.Duration, err error) {
 	result := "success"
@@ -63,10 +77,16 @@ type dao[T any] struct {
 	batchSize int // 批量创建时的批次大小，默认 100
 }
 
+func (d *dao[T]) setBatchSize(size int) {
+	if size > 0 {
+		d.batchSize = size
+	}
+}
+
 // NewDAO 创建DAO实例
 // db 不能为 nil，否则返回错误
 // opts 可选配置，如 WithBatchSize 设置批量创建时的批次大小
-func NewDAO[T any](db *gorm.DB, opts ...func(*dao[T])) (IDAO[T], error) {
+func NewDAO[T any](db *gorm.DB, opts ...DAOOption) (IDAO[T], error) {
 	if db == nil {
 		return nil, xerror.New("dbrepo: NewDAO called with nil *gorm.DB")
 	}
@@ -78,11 +98,9 @@ func NewDAO[T any](db *gorm.DB, opts ...func(*dao[T])) (IDAO[T], error) {
 }
 
 // WithBatchSize 设置批量创建时的批次大小
-func WithBatchSize[T any](size int) func(*dao[T]) {
-	return func(d *dao[T]) {
-		if size > 0 {
-			d.batchSize = size
-		}
+func WithBatchSize(size int) DAOOption {
+	return func(t daoOptionTarget) {
+		t.setBatchSize(size)
 	}
 }
 
@@ -94,7 +112,7 @@ func (d *dao[T]) Create(ctx context.Context, record *T) (err error) {
 	}()
 
 	if record == nil {
-		return xerror.NewXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError, "dao: record must not be nil")
 	}
 	if err := d.db.WithContext(ctx).Create(record).Error; err != nil {
 		return xerror.WrapWithXCode(err, xcode.DBFailed)
@@ -110,7 +128,7 @@ func (d *dao[T]) Creates(ctx context.Context, records []*T) (err error) {
 	}()
 
 	if len(records) == 0 {
-		return xerror.NewXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError, "dao: records must not be empty")
 	}
 
 	// 检查是否有nil记录
@@ -134,7 +152,7 @@ func (d *dao[T]) Save(ctx context.Context, record *T) (err error) {
 	}()
 
 	if record == nil {
-		return xerror.NewXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError, "dao: record must not be nil")
 	}
 	if err := d.db.WithContext(ctx).Save(record).Error; err != nil {
 		return xerror.WrapWithXCode(err, xcode.DBFailed)
@@ -150,7 +168,7 @@ func (d *dao[T]) First(ctx context.Context, id uint) (record *T, err error) {
 	}()
 
 	if id == 0 {
-		return nil, xerror.NewXCode(xcode.DBRequestParamError)
+		return nil, xerror.NewXCode(xcode.DBRequestParamError, "dao: id must not be zero")
 	}
 
 	var r T
@@ -171,7 +189,7 @@ func (d *dao[T]) FirstWith(ctx context.Context, id uint, preloads ...string) (re
 	}()
 
 	if id == 0 {
-		return nil, xerror.NewXCode(xcode.DBRequestParamError)
+		return nil, xerror.NewXCode(xcode.DBRequestParamError, "dao: id must not be zero")
 	}
 
 	db := d.db.WithContext(ctx).Where("id = ?", id)
@@ -198,7 +216,7 @@ func (d *dao[T]) Delete(ctx context.Context, id uint) (rowsAffected int64, err e
 	}()
 
 	if id == 0 {
-		return 0, xerror.NewXCode(xcode.DBRequestParamError)
+		return 0, xerror.NewXCode(xcode.DBRequestParamError, "dao: id must not be zero")
 	}
 
 	model := new(T)
@@ -217,7 +235,7 @@ func (d *dao[T]) Remove(ctx context.Context, id uint) (rowsAffected int64, err e
 	}()
 
 	if id == 0 {
-		return 0, xerror.NewXCode(xcode.DBRequestParamError)
+		return 0, xerror.NewXCode(xcode.DBRequestParamError, "dao: id must not be zero")
 	}
 
 	model := new(T)
@@ -238,13 +256,13 @@ func (d *dao[T]) Update(ctx context.Context, id uint, record *T, fields ...strin
 	}()
 
 	if id == 0 {
-		return xerror.NewXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError, "dao: id must not be zero")
 	}
 	if record == nil {
-		return xerror.NewXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError, "dao: record must not be nil")
 	}
 	if len(fields) == 0 {
-		return xerror.NewXCode(xcode.DBRequestParamError)
+		return xerror.NewXCode(xcode.DBRequestParamError, "dao: update fields must not be empty")
 	}
 	if err := d.db.WithContext(ctx).Model(new(T)).Where("id = ?", id).Select(fields).Updates(record).Error; err != nil {
 		return xerror.WrapWithXCode(err, xcode.DBFailed)

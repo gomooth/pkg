@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"time"
+	"unsafe"
 
 	"github.com/eko/gocache/lib/v4/cache"
 	"github.com/eko/gocache/lib/v4/store"
@@ -39,17 +40,27 @@ type dbCache[E, F any] struct {
 // errorCacheKeySuffix 错误占位值的缓存键后缀，与正常数据完全隔离
 const errorCacheKeySuffix = ":__err__"
 
-var dbCacheMeter = telemetry.Meter("dbcache")
-
 var (
-	dbCacheHitCounter, _           = dbCacheMeter.Int64Counter("dbcache.hit")
-	dbCacheMissCounter, _          = dbCacheMeter.Int64Counter("dbcache.miss")
-	dbCacheRenewCounter, _         = dbCacheMeter.Int64Counter("dbcache.renew")
-	dbCacheErrorCacheHitCounter, _ = dbCacheMeter.Int64Counter("dbcache.error_cache.hit")
-	dbCacheWriteCounter, _         = dbCacheMeter.Int64Counter("dbcache.write")
-	dbCacheOperationDuration, _    = dbCacheMeter.Float64Histogram("dbcache.operation.duration",
-		metric.WithUnit("s"))
+	dbCacheHitCounter           metric.Int64Counter
+	dbCacheMissCounter          metric.Int64Counter
+	dbCacheRenewCounter         metric.Int64Counter
+	dbCacheErrorCacheHitCounter metric.Int64Counter
+	dbCacheWriteCounter         metric.Int64Counter
+	dbCacheOperationDuration    metric.Float64Histogram
 )
+
+func init() {
+	telemetry.OnProviderSet(func() {
+		m := telemetry.Meter("dbcache")
+		dbCacheHitCounter, _ = m.Int64Counter("cache.dbcache.hit")
+		dbCacheMissCounter, _ = m.Int64Counter("cache.dbcache.miss")
+		dbCacheRenewCounter, _ = m.Int64Counter("cache.dbcache.renew")
+		dbCacheErrorCacheHitCounter, _ = m.Int64Counter("cache.dbcache.error_cache.hit")
+		dbCacheWriteCounter, _ = m.Int64Counter("cache.dbcache.write")
+		dbCacheOperationDuration, _ = m.Float64Histogram("cache.dbcache.operation.duration",
+			metric.WithUnit("s"))
+	})
+}
 
 func recordDBCacheDuration(ctx context.Context, namespace, operation string, dur time.Duration, err error) {
 	result := "success"
@@ -75,8 +86,8 @@ func hashKey(s string) string {
 //
 // 默认使用 JSON 编解码器，可通过 WithCodec 选项替换为 msgpack 或 gob 等更高效的实现。
 // 注意：更换编解码器会使现有缓存数据失效。
-func New[E, F any](name string, cacheManager *cache.Cache[string], opts ...func(*option)) IDBCache[E, F] {
-	cnf := &option{
+func New[E, F any](name string, cacheManager *cache.Cache[string], opts ...func(*dbCacheOption)) IDBCache[E, F] {
+	cnf := &dbCacheOption{
 		autoRenew:      true,
 		expiration:     5 * time.Minute,
 		renewThreshold: 0.2,
@@ -317,7 +328,10 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 	if err == nil {
 		dbCacheHitCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name)))
 
-		// 延长时效：当剩余 TTL <= expiration * renewThreshold 时续期
+		// auto-renew 使用全局 expiration 重置 TTL，而非保留剩余 TTL。
+		// 这确保续期后的缓存拥有完整的过期窗口，而非逐渐缩短。
+		// 当前 API 所有缓存键统一使用 s.expiration，如需按 key 自定义 TTL，
+		// 需扩展 IDBCache 接口。
 		// 使用 renewSingle 去重，避免多个 goroutine 同时续期同一 key 造成写入风暴
 		if s.autoRenew && d <= time.Duration(float64(s.expiration)*s.renewThreshold) {
 			if _, err, _ := s.renewSingle.Do(key, func() (any, error) {
@@ -372,16 +386,17 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 				); setErr != nil {
 					slog.Debug("dbcache: error cache set failed", slog.String("component", "dbcache"), slog.String("key", errKey), slog.String("error", setErr.Error()))
 				} else {
-					dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
+					dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success"), attribute.String("type", "error_cache")))
 				}
 			}
 			return nil, err
 		}
 
-		// string(result) 会产生一次 []byte→string 拷贝，这是 gocache Cache[string] 的 API 限制。
-		// 大 payload 场景若需避免此开销，建议直接使用底层 gocache 实例。
+		// 使用 unsafe.String 零拷贝转换 []byte→string，避免每次缓存写入的完整拷贝。
+		// 安全性：result 是 fun(ctx) 的返回值，Set 调用后 []byte 不再被修改。
+		// gocache 内部将 string 存入 Redis/memstore，不持有原始 []byte 引用。
 		if err := s.cacheManager.Set(
-			ctx, key, string(result),
+			ctx, key, unsafe.String(unsafe.SliceData(result), len(result)),
 			store.WithExpiration(s.expiration),
 			store.WithTags(cachedTags),
 		); err != nil {

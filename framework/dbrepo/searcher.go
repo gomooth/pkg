@@ -14,8 +14,8 @@ import (
 
 // IListSearcher 列表查询，返回实体
 type IListSearcher[M, F any] interface {
-	// All 查询所有记录
-	All(ctx context.Context, q dbquery.IQuery[F]) ([]*M, error)
+	// FindAll 查询所有记录
+	FindAll(ctx context.Context, q dbquery.IQuery[F]) ([]*M, error)
 	// List 分页查询记录（不返回总数）
 	List(ctx context.Context, q dbquery.IQuery[F]) ([]*M, error)
 	// Paginate 分页查询记录（返回总数）
@@ -82,11 +82,11 @@ func (q *searcher[M, F]) buildQuery(ctx context.Context, query dbquery.IQuery[F]
 	return dbquery.Build(db, query, opts...)
 }
 
-// All 查询所有记录
-func (q *searcher[M, F]) All(ctx context.Context, query dbquery.IQuery[F]) (records []*M, err error) {
+// FindAll 查询所有记录
+func (q *searcher[M, F]) FindAll(ctx context.Context, query dbquery.IQuery[F]) (records []*M, err error) {
 	start := time.Now()
 	defer func() {
-		recordDBRepoMetric(ctx, "searcher", "all", time.Since(start), err)
+		recordDBRepoMetric(ctx, "searcher", "find_all", time.Since(start), err)
 	}()
 
 	db, err := q.buildQuery(ctx, query)
@@ -159,14 +159,16 @@ func (q *searcher[M, F]) CountBy(ctx context.Context, filter *F) (count int64, e
 		recordDBRepoMetric(ctx, "searcher", "count_by", time.Since(start), err)
 	}()
 
-	opt := dbquery.NewQuery(*filter)
 	db := q.db.WithContext(ctx).Model(new(M))
-	db, err = dbquery.Build(db, opt,
-		dbquery.WithFilterTransfer[F](q.filterTransfer),
-		dbquery.WithSortMapping[F](dbquery.NewSortMapping(dbquery.WithDefaultSort(""))),
-	)
-	if err != nil {
-		return 0, xerror.WrapWithXCode(err, xcode.DBRequestParamError)
+	if filter != nil {
+		opt := dbquery.NewQuery(*filter)
+		db, err = dbquery.Build(db, opt,
+			dbquery.WithFilterTransfer[F](q.filterTransfer),
+			dbquery.WithSortMapping[F](dbquery.NewSortMapping(dbquery.WithDefaultSort(""))),
+		)
+		if err != nil {
+			return 0, xerror.WrapWithXCode(err, xcode.DBRequestParamError)
+		}
 	}
 
 	if err := db.Count(&count).Error; err != nil {
@@ -182,14 +184,16 @@ func (q *searcher[M, F]) ExistsBy(ctx context.Context, filter *F) (exists bool, 
 		recordDBRepoMetric(ctx, "searcher", "exists_by", time.Since(start), err)
 	}()
 
-	opt := dbquery.NewQuery(*filter)
 	db := q.db.WithContext(ctx).Model(new(M))
-	db, err = dbquery.Build(db, opt,
-		dbquery.WithFilterTransfer[F](q.filterTransfer),
-		dbquery.WithSortMapping[F](dbquery.NewSortMapping(dbquery.WithDefaultSort(""))),
-	)
-	if err != nil {
-		return false, xerror.WrapWithXCode(err, xcode.DBRequestParamError)
+	if filter != nil {
+		opt := dbquery.NewQuery(*filter)
+		db, err = dbquery.Build(db, opt,
+			dbquery.WithFilterTransfer[F](q.filterTransfer),
+			dbquery.WithSortMapping[F](dbquery.NewSortMapping(dbquery.WithDefaultSort(""))),
+		)
+		if err != nil {
+			return false, xerror.WrapWithXCode(err, xcode.DBRequestParamError)
+		}
 	}
 
 	result := db.Select("1").Limit(1).Scan(new(int))
@@ -239,9 +243,21 @@ func (q *searcher[M, F]) FirstWith(ctx context.Context, query dbquery.IQuery[F],
 		recordDBRepoMetric(ctx, "searcher", "first_with", time.Since(start), err)
 	}()
 
+	opt := new(findOption)
+	for _, build := range optBuilders {
+		build(opt)
+	}
+
 	db, err := q.buildQuery(ctx, query)
 	if err != nil {
 		return nil, xerror.WrapWithXCode(err, xcode.DBRequestParamError)
+	}
+
+	for _, p := range opt.preloads {
+		db = db.Preload(p)
+	}
+	if len(opt.selects) > 0 {
+		db = db.Select(opt.selects)
 	}
 
 	var r M

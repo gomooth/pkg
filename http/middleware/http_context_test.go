@@ -16,7 +16,7 @@ func TestHttpContext_InjectsContext(t *testing.T) {
 	r := gin.New()
 	r.Use(HttpContext())
 	r.POST("/test", func(c *gin.Context) {
-		stx, err := httpcontext.MustParse(c)
+		stx, err := httpcontext.Parse(c)
 		assert.NoError(t, err)
 		assert.NotNil(t, stx)
 		c.String(http.StatusOK, "ok")
@@ -53,7 +53,7 @@ func TestHttpContext_RawBodyInContext(t *testing.T) {
 	r := gin.New()
 	r.Use(HttpContext())
 	r.POST("/test", func(c *gin.Context) {
-		stx, err := httpcontext.MustParse(c)
+		stx, err := httpcontext.Parse(c)
 		assert.NoError(t, err)
 		// 原始请求体应存储在 context 中
 		rawBody, ok := stx.Value(httpcontext.RequestRawBodyDataKey).([]byte)
@@ -75,7 +75,7 @@ func TestHttpContext_EmptyBody(t *testing.T) {
 	r := gin.New()
 	r.Use(HttpContext())
 	r.GET("/test", func(c *gin.Context) {
-		stx, err := httpcontext.MustParse(c)
+		stx, err := httpcontext.Parse(c)
 		assert.NoError(t, err)
 		assert.NotNil(t, stx)
 		c.String(http.StatusOK, "ok")

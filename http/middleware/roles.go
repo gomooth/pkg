@@ -14,7 +14,7 @@ import (
 // WithRole 角色权限中间件
 func WithRole(role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		svrCtx, err := httpcontext.MustParse(ctx)
+		svrCtx, err := httpcontext.Parse(ctx)
 		if err != nil {
 			slog.Error("role check failed: context convert failed", slog.String("component", "role"), slog.String("error", err.Error()))
 			_ = ctx.AbortWithError(http.StatusForbidden, xerror.NewXCode(xcode.Forbidden, "context convert failed"))
@@ -45,7 +45,7 @@ func WithRole(role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFun
 // 一般，在同一路由针对不同角色处理逻辑完成不同的场景很实用。
 func RoleFunc(handler gin.HandlerFunc, role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		if htx, err := httpcontext.MustParse(ctx); err == nil {
+		if htx, err := httpcontext.Parse(ctx); err == nil {
 			isRole := false
 			roles = append([]httpcontext.IRole{role}, roles...)
 			for _, r := range roles {
@@ -68,7 +68,7 @@ func RoleFunc(handler gin.HandlerFunc, role httpcontext.IRole, roles ...httpcont
 // 如果用户不满足指定角色要求，则中断链路，返回 http status 403 错误
 func RoleFuncAbort(handler gin.HandlerFunc, role httpcontext.IRole, roles ...httpcontext.IRole) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		htx, err := httpcontext.MustParse(ctx)
+		htx, err := httpcontext.Parse(ctx)
 		if err != nil {
 			slog.Error("role check failed: context convert failed", slog.String("component", "role"), slog.String("error", err.Error()))
 			ctx.AbortWithStatus(http.StatusForbidden)

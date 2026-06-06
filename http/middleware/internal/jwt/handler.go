@@ -12,12 +12,18 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-var jwtMeter = telemetry.Meter("jwt")
-
 var (
-	jwtOperationCounter, _    = jwtMeter.Int64Counter("jwt.operation")
-	jwtTokenRefreshCounter, _ = jwtMeter.Int64Counter("jwt.token.refresh")
+	jwtOperationCounter    metric.Int64Counter
+	jwtTokenRefreshCounter metric.Int64Counter
 )
+
+func init() {
+	telemetry.OnProviderSet(func() {
+		m := telemetry.Meter("jwt")
+		jwtOperationCounter, _ = m.Int64Counter("jwt.operation")
+		jwtTokenRefreshCounter, _ = m.Int64Counter("jwt.token.refresh")
+	})
+}
 
 type IHandler interface {
 	Handle() error

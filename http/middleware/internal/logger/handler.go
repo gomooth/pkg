@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/gomooth/pkg/http/middleware/internal/logger/bodyutil"
 	"github.com/gomooth/xerror"
 
 	"github.com/gin-gonic/gin"
@@ -130,18 +130,8 @@ func (f handler) redactValue(val string) string {
 func (f handler) printRequestPayload() string {
 	var bf bytes.Buffer
 
-	// 读取 request body 失败，则在日志中显示
-	bs, err := io.ReadAll(f.ctx.Request.Body)
-	if err != nil {
-		bf.WriteString("\n [PAYLOAD] ")
-		bf.WriteByte('\n')
-		bf.WriteString(f.retractive)
-		bf.WriteString("<read body failed: ")
-		bf.WriteString(err.Error())
-		bf.WriteString(">")
-
-		return bf.String()
-	}
+	// 读取 request body，同时重建 Body 使其可被再次读取
+	bs := bodyutil.ReadBody(f.ctx.Request)
 
 	// 如果是 GET 请求，没有 payload 则不显示
 	if f.ctx.Request.Method == http.MethodGet && len(bs) == 0 {

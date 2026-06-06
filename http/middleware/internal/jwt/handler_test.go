@@ -88,7 +88,7 @@ func TestHandler_Handle_ValidToken(t *testing.T) {
 		Roles:   nil,
 	}
 
-	tk, err := pkgjwt.NewToken(secret, user)
+	tk, err := pkgjwt.NewTokenBuilder(secret, user).Build()
 	if err != nil {
 		t.Fatalf("cannot create token: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestHandler_Handle_ValidToken_WithOptionStyle(t *testing.T) {
 		Roles:   nil,
 	}
 
-	tk, err := pkgjwt.NewToken(secret, user)
+	tk, err := pkgjwt.NewTokenBuilder(secret, user).Build()
 	if err != nil {
 		t.Fatalf("cannot create token: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestHandler_Handle_NonStatefulTokenOnStatefulHandler(t *testing.T) {
 		Name:    "Test User",
 	}
 
-	tk, err := pkgjwt.NewToken(secret, user) // non-stateful token
+	tk, err := pkgjwt.NewTokenBuilder(secret, user).Build() // non-stateful token
 	if err != nil {
 		t.Fatalf("cannot create token: %v", err)
 	}

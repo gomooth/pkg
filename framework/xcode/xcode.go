@@ -55,3 +55,10 @@ var (
 	ErrStoragePathInvalid  = DefineXCode(15001, http.StatusBadRequest, "存储路径无效")
 	ErrStorageFileNotFound = DefineXCode(15002, http.StatusNotFound, "存储文件不存在")
 )
+
+// HTTP 中间件错误码 16xxx
+var (
+	ErrRateLimited    = DefineXCode(16001, http.StatusTooManyRequests, "请求过于频繁")
+	ErrXSSDetected    = DefineXCode(16002, http.StatusBadRequest, "请求包含不安全内容")
+	ErrHTTPCacheError = DefineXCode(16003, http.StatusInternalServerError, "HTTP 缓存错误")
+)

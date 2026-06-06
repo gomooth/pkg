@@ -7,15 +7,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gomooth/pkg/framework/telemetry"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/ulule/limiter/v3"
 )
 
-var limitMeter = telemetry.Meter("limit")
-
 var (
-	limitRejectedCounter, _ = limitMeter.Int64Counter("limit.rejected")
+	limitRejectedCounter metric.Int64Counter
 )
+
+func init() {
+	telemetry.OnProviderSet(func() {
+		m := telemetry.Meter("limit")
+		limitRejectedCounter, _ = m.Int64Counter("limit.rejected")
+	})
+}
 
 // RateLimiter 创建限速器中间件
 func RateLimiter(keyFn func(*gin.Context) string, limit *limiter.Limiter) gin.HandlerFunc {

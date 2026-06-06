@@ -59,7 +59,7 @@ func TestJWTWith_ValidToken(t *testing.T) {
 		Roles:   []httpcontext.IRole{testRole("admin")},
 	}
 
-	tk, err := pkgjwt.NewToken(secret, user)
+	tk, err := pkgjwt.NewTokenBuilder(secret, user).Build()
 	assert.NoError(t, err)
 	tokenStr, err := tk.ToString(context.Background())
 	assert.NoError(t, err)
@@ -107,14 +107,15 @@ func TestJWTStatefulWithout_ValidToken(t *testing.T) {
 		Name:    "Test User",
 	}
 
-	tk, err := pkgjwt.NewStatefulToken(secret, user, nil)
+	// 无状态 token（不设置 StatefulStore），ToString 应成功
+	tk, err := pkgjwt.NewTokenBuilder(secret, user).Build()
 	assert.NoError(t, err)
 	_, err = tk.ToString(context.Background())
-	assert.Error(t, err) // stateful token without store should fail ToString
+	assert.NoError(t, err)
 
 	// 测试有 stateful token 但使用 JWTStatefulWithout（跳过状态校验）的场景
 	store := &mockStatefulStore{}
-	tk2, err := pkgjwt.NewStatefulToken(secret, user, store)
+	tk2, err := pkgjwt.NewTokenBuilder(secret, user).WithStatefulStore(store).Build()
 	assert.NoError(t, err)
 	tokenStr, err := tk2.ToString(context.Background())
 	assert.NoError(t, err)

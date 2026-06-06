@@ -23,15 +23,15 @@ func init() {
 // ---------------------------------------------------------------------------
 
 func TestNewToken_EmptySecret_XCode(t *testing.T) {
-	_, err := NewToken(nil, httpcontext.User{ID: 1, Name: "test"})
+	_, err := NewTokenBuilder(nil, httpcontext.User{ID: 1, Name: "test"}).Build()
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
 
-	_, err = NewToken([]byte{}, httpcontext.User{ID: 1, Name: "test"})
+	_, err = NewTokenBuilder([]byte{}, httpcontext.User{ID: 1, Name: "test"}).Build()
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
 }
 
 func TestNewStatefulToken_EmptySecret_XCode(t *testing.T) {
-	_, err := NewStatefulToken(nil, httpcontext.User{ID: 1, Name: "test"}, nil)
+	_, err := NewTokenBuilder(nil, httpcontext.User{ID: 1, Name: "test"}).WithStatefulStore(nil).Build()
 	assert.True(t, xerror.IsXCode(err, xcode.ErrJWTSecretNotSet))
 }
 
@@ -42,7 +42,7 @@ func TestNewStatefulToken_EmptySecret_XCode(t *testing.T) {
 func TestNewTokenWithSecret(t *testing.T) {
 	secret := []byte("test-secret-key")
 
-	tk, err := NewToken(secret, httpcontext.User{ID: 42, Account: "test-account", Name: "Test User"})
+	tk, err := NewTokenBuilder(secret, httpcontext.User{ID: 42, Account: "test-account", Name: "Test User"}).Build()
 	require.Nil(t, err)
 
 	tokenStr, err := tk.ToString(context.Background())
@@ -82,7 +82,7 @@ func TestOptionSecretWithParseTokenWithGinAndOption(t *testing.T) {
 	optSecret := []byte("option-level-secret-32bytes-ok!")
 	opt := NewOption(optSecret, testRoleConvert)
 
-	tk, err := NewToken(optSecret, httpcontext.User{ID: 7, Account: "opt-user", Name: "Opt User"})
+	tk, err := NewTokenBuilder(optSecret, httpcontext.User{ID: 7, Account: "opt-user", Name: "Opt User"}).Build()
 	require.Nil(t, err)
 	tokenStr, err := tk.ToString(context.Background())
 	require.Nil(t, err)
@@ -118,7 +118,7 @@ func TestLegacySecrets(t *testing.T) {
 	newSecret := []byte("new-secret-key-32-bytes-long!!!")
 
 	// Sign with old secret
-	tk, err := NewToken(oldSecret, httpcontext.User{ID: 1, Name: "test"})
+	tk, err := NewTokenBuilder(oldSecret, httpcontext.User{ID: 1, Name: "test"}).Build()
 	require.Nil(t, err)
 	tokenStr, err := tk.ToString(context.Background())
 	require.Nil(t, err)

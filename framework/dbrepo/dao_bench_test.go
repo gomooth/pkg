@@ -223,7 +223,7 @@ func BenchmarkNewDAO_WithOptions(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = NewDAO[benchUser](db, WithBatchSize[benchUser](200))
+		_, _ = NewDAO[benchUser](db, WithBatchSize(200))
 	}
 }
 

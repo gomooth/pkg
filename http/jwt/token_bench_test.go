@@ -38,7 +38,7 @@ func BenchmarkToken_ToString(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		tk, _ := NewToken(benchSecret, user)
+		tk, _ := NewTokenBuilder(benchSecret, user).Build()
 		_, _ = tk.ToString(context.Background())
 	}
 }
@@ -54,7 +54,7 @@ func BenchmarkToken_ToString_WithConfig(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		tk, _ := NewToken(benchSecret, user)
+		tk, _ := NewTokenBuilder(benchSecret, user).Build()
 		tk.SetIssuer("bench-app").SetDuration(3600e9) // 1h
 		_, _ = tk.ToString(context.Background())
 	}
@@ -68,7 +68,7 @@ func BenchmarkParseToken(b *testing.B) {
 	b.ReportAllocs()
 
 	user := benchUser()
-	tk, _ := NewToken(benchSecret, user)
+	tk, _ := NewTokenBuilder(benchSecret, user).Build()
 	tokenStr, _ := tk.ToString(context.Background())
 
 	b.ResetTimer()
@@ -88,7 +88,7 @@ func BenchmarkParseToken_GetUser(b *testing.B) {
 	b.ReportAllocs()
 
 	user := benchUser()
-	tk, _ := NewToken(benchSecret, user)
+	tk, _ := NewTokenBuilder(benchSecret, user).Build()
 	tokenStr, _ := tk.ToString(context.Background())
 
 	toRole := func(s string) (httpcontext.IRole, error) { return benchRole(1), nil }
@@ -116,7 +116,7 @@ func BenchmarkNewToken(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = NewToken(benchSecret, user)
+		_, _ = NewTokenBuilder(benchSecret, user).Build()
 	}
 }
 
@@ -128,7 +128,7 @@ func BenchmarkToken_IsExpired(b *testing.B) {
 	b.ReportAllocs()
 
 	user := benchUser()
-	tk, _ := NewToken(benchSecret, user)
+	tk, _ := NewTokenBuilder(benchSecret, user).Build()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -147,7 +147,7 @@ func BenchmarkToken_Refresh(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		tk, _ := NewToken(benchSecret, user)
+		tk, _ := NewTokenBuilder(benchSecret, user).Build()
 		tk.Refresh()
 	}
 }

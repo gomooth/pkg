@@ -22,7 +22,9 @@ type commandJob struct {
 	maxRetry uint8         // 最大重试次数
 	timeout  time.Duration // 整体重试循环超时，0 表示无超时
 
-	failedSaver func(jobName string, in []string, err error)
+	ctx          context.Context     // 任务上下文，从 cron wrapper 传入
+	panicHandler PanicHandlerFunc    // panic 恢复处理器
+	failedSaver  func(jobName string, in []string, err error)
 
 	log *slog.Logger
 }
@@ -32,9 +34,26 @@ func (j commandJob) Run() {
 	start := time.Now()
 	defer j.logf("debug", "[job] %s run end", j.jobName)
 
+	// panic 恢复
+	defer func() {
+		if r := recover(); r != nil {
+			if j.panicHandler != nil {
+				j.panicHandler(r)
+			} else {
+				j.logf("error", "[job] %s panic: %v", j.jobName, r)
+			}
+		}
+	}()
+
 	tracer := telemetry.Tracer("job")
 
-	ctx, span := tracer.Start(context.Background(), j.jobName,
+	// 使用 job 自身的 ctx，若未设置则回退到 Background
+	parentCtx := j.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+
+	ctx, span := tracer.Start(parentCtx, j.jobName,
 		trace.WithAttributes(
 			attribute.String("job.name", j.jobName),
 			attribute.String("job.type", "cron"),

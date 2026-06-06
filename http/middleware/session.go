@@ -18,7 +18,7 @@ type SessionOption struct {
 	Domain string
 	MaxAge time.Duration
 
-	// Secure cookie 是否仅通过 HTTPS 传输。nil 使用默认值 false
+	// Secure cookie 是否仅通过 HTTPS 传输。nil 使用默认值 true
 	Secure *bool
 	// HttpOnly cookie 是否禁止 JavaScript 访问。nil 使用默认值 true
 	HttpOnly *bool
@@ -27,9 +27,11 @@ type SessionOption struct {
 }
 
 func resolveSessionDefaults(opt SessionOption) (secure bool, httpOnly bool, sameSite http.SameSite) {
-	secure = false
+	secure = true
 	if opt.Secure != nil {
 		secure = *opt.Secure
+	} else {
+		slog.Warn("session: Secure not set, defaulting to true for security. Set Secure=false explicitly if HTTP is needed")
 	}
 
 	httpOnly = true

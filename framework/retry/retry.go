@@ -41,7 +41,17 @@ func (s *ExponentialDelay) Delay(attempt uint) time.Duration {
 		shift = 30
 	}
 	d := s.Base * time.Duration(1<<shift)
-	if d > s.Max {
+
+	// Overflow protection: int64 overflow produces negative values
+	if d < 0 {
+		if s.Max > 0 {
+			return s.Max
+		}
+		return time.Duration(1<<30) * s.Base
+	}
+
+	// Only cap when Max > 0
+	if s.Max > 0 && d > s.Max {
 		d = s.Max
 	}
 

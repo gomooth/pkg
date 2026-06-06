@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sort"
+	"sync"
 )
 
 // IQuery 组合过滤、排序、分页三个维度，表示完整的查询规格。
@@ -26,6 +27,9 @@ type Query[F any] struct {
 	preloads []string
 	sort     ISortSpec
 	page     IPageSpec
+
+	strCache string
+	strOnce  sync.Once
 }
 
 // NewQuery 创建查询规格
@@ -73,6 +77,14 @@ type queryJSON[F any] struct {
 }
 
 func (q *Query[F]) String() string {
+	q.strOnce.Do(func() {
+		q.strCache = q.buildString()
+	})
+	return q.strCache
+}
+
+// buildString 提取序列化逻辑，由 sync.Once 保证仅执行一次
+func (q *Query[F]) buildString() string {
 	// 排序 preloads 保证缓存 key 稳定
 	preloads := q.Preloads()
 	sortedPreloads := make([]string, len(preloads))

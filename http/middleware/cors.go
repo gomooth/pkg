@@ -72,3 +72,11 @@ func WithCORSExposeHeaders(keys ...string) cors.Option {
 func WithCORSMaxAge(d time.Duration) cors.Option {
 	return cors.WithMaxAge(d)
 }
+
+// WithCORSAllowCredentials 设置是否允许携带凭证（Cookie、Authorization header）。
+// 默认 true。设为 false 时浏览器不会在跨域请求中发送凭证。
+// 当 AllowCredentials=true 且 AllowOriginFunc 为通配（对所有 origin 返回 true）时，
+// 会输出安全警告，因为这种组合存在 CSRF 风险。
+func WithCORSAllowCredentials(enabled bool) cors.Option {
+	return cors.WithCORSAllowCredentials(enabled)
+}

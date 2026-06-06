@@ -37,7 +37,7 @@ func newMemoryCacheManager() *cache.Cache[string] {
 // ============================================================
 
 func TestWithAutoRenew(t *testing.T) {
-	opt := &option{}
+	opt := &dbCacheOption{}
 	WithAutoRenew(true)(opt)
 	assert.True(t, opt.autoRenew)
 
@@ -46,7 +46,7 @@ func TestWithAutoRenew(t *testing.T) {
 }
 
 func TestWithExpiration(t *testing.T) {
-	opt := &option{}
+	opt := &dbCacheOption{}
 
 	// 正常值
 	WithExpiration(10 * time.Minute)(opt)
@@ -72,7 +72,7 @@ func TestWithRenewThreshold(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			opt := &option{}
+			opt := &dbCacheOption{}
 			WithRenewThreshold(tt.ratio)(opt)
 			assert.Equal(t, tt.expected, opt.renewThreshold)
 		})
@@ -80,7 +80,7 @@ func TestWithRenewThreshold(t *testing.T) {
 }
 
 func TestWithCodec(t *testing.T) {
-	opt := &option{}
+	opt := &dbCacheOption{}
 
 	// nil codec 不应覆盖默认值
 	defaultCodec := opt.codec
@@ -94,7 +94,7 @@ func TestWithCodec(t *testing.T) {
 }
 
 func TestWithErrorCacheTTL(t *testing.T) {
-	opt := &option{}
+	opt := &dbCacheOption{}
 
 	WithErrorCacheTTL(30 * time.Second)(opt)
 	assert.Equal(t, 30*time.Second, opt.errorCacheTTL)

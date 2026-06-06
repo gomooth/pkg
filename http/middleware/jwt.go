@@ -12,7 +12,7 @@ import (
 )
 
 // JWTWith jwt 鉴权中间件
-// 在用户登录成功后，配合 jwt.NewToken 生成 token
+// 在用户登录成功后，配合 jwt.NewTokenBuilder 生成 token
 func JWTWith(secret []byte, roleConvert httpcontext.ToRole, opts ...func(*jwt.Option)) gin.HandlerFunc {
 	opt := jwt.NewOption(secret, roleConvert, opts...)
 	return func(c *gin.Context) {
@@ -29,7 +29,7 @@ func JWTWith(secret []byte, roleConvert httpcontext.ToRole, opts ...func(*jwt.Op
 }
 
 // JWTStatefulWith 有状态的 jwt 鉴权中间件
-// 需要配合 jwt.NewStatefulToken 使用（在用户登录成功后，调用该函数创建token）
+// 需要配合 jwt.NewTokenBuilder(...).WithStatefulStore(store) 使用（在用户登录成功后，调用该函数创建token）
 //
 // usage:
 //
@@ -59,7 +59,7 @@ func JWTStatefulWith(secret []byte, roleConvert httpcontext.ToRole, store jwt.St
 }
 
 // JWTStatefulWithout 有状态的 jwt 鉴权中间件，仅校验 jwt 是否合法，不校验状态
-// 需要配合 jwt.NewStatefulToken 使用（在用户登录成功后，调用该函数创建token）
+// 需要配合 jwt.NewTokenBuilder(...).WithStatefulStore(store) 使用（在用户登录成功后，调用该函数创建token）
 func JWTStatefulWithout(secret []byte, roleConvert httpcontext.ToRole, opts ...func(*jwt.Option)) gin.HandlerFunc {
 	opt := jwt.NewOption(secret, roleConvert, opts...)
 	return func(c *gin.Context) {

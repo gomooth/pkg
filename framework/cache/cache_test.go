@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/gomooth/pkg/framework/cache/memstore"
+	pkgxcode "github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/xerror"
 )
 
 func newTestCacheManager[T any]() *gocache.Cache[T] {
@@ -344,4 +347,27 @@ func TestWithoutMaxItems_NoLimit(t *testing.T) {
 		err := c.Set(ctx, fmt.Sprintf("key-%d", i), &val, 5*time.Minute)
 		assert.Nil(t, err)
 	}
+}
+
+func TestNilManager_ReturnsErrCacheNotInitialized(t *testing.T) {
+	c := New[string]("test", nil)
+	ctx := context.Background()
+
+	var xe xerror.XError
+
+	_, _, err := c.Get(ctx, "key")
+	assert.True(t, errors.As(err, &xe))
+	assert.Equal(t, pkgxcode.ErrCacheNotInitialized.Code(), xe.ErrorCode())
+
+	_, err = c.GetAndDelete(ctx, "key")
+	assert.True(t, errors.As(err, &xe))
+	assert.Equal(t, pkgxcode.ErrCacheNotInitialized.Code(), xe.ErrorCode())
+
+	err = c.Set(ctx, "key", nil, 0)
+	assert.True(t, errors.As(err, &xe))
+	assert.Equal(t, pkgxcode.ErrCacheNotInitialized.Code(), xe.ErrorCode())
+
+	err = c.Clear(ctx, "key")
+	assert.True(t, errors.As(err, &xe))
+	assert.Equal(t, pkgxcode.ErrCacheNotInitialized.Code(), xe.ErrorCode())
 }

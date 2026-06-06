@@ -17,10 +17,12 @@ import (
 var dbRelation sync.Map
 
 type dbHolder struct {
-	mu    sync.Mutex
-	db    *gorm.DB
-	err   error
-	ready bool
+	mu           sync.Mutex
+	db           *gorm.DB
+	err          error
+	ready        bool
+	reconnecting bool         // 标记正在重连
+	reconnectCh  chan struct{} // 重连完成信号
 }
 
 // isHealthy 检查连接是否可用。
@@ -87,16 +89,16 @@ func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, erro
 // ConnectWithContext 通过 context 获取数据库连接
 func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
 	if option == nil {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db connect option empty")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: connect option is empty")
 	}
 	if option.Name == "" {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "the db config name invalid")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config name is invalid")
 	}
 	if option.Config == nil {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db config empty")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config is empty")
 	}
 	if len(option.Config.Driver) == 0 || len(option.Config.Dsn) == 0 {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db config invalid")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config is invalid")
 	}
 
 	// 检查 context 是否已取消
@@ -131,7 +133,39 @@ func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func
 			holder.err = nil
 		}
 	}
-	defer holder.mu.Unlock()
+
+	// 如果另一个协程正在重连，等待其完成
+	if holder.reconnecting {
+		ch := holder.reconnectCh
+		holder.mu.Unlock()
+		select {
+		case <-ch:
+			// 重连已完成
+		case <-ctx.Done():
+			return nil, xerror.WrapWithXCode(ctx.Err(), xcode.ErrDBConnect)
+		}
+		holder.mu.Lock()
+		if holder.ready {
+			db := holder.db
+			holder.mu.Unlock()
+			return db, nil
+		}
+		holder.mu.Unlock()
+		return nil, holder.err
+	}
+
+	// 标记正在重连
+	holder.reconnecting = true
+	holder.reconnectCh = make(chan struct{})
+	holder.mu.Unlock()
+
+	// 重连完成后清理：先在锁内重置标志，再解锁，最后关闭通道
+	defer func() {
+		holder.mu.Lock()
+		holder.reconnecting = false
+		holder.mu.Unlock()
+		close(holder.reconnectCh)
+	}()
 
 	dialect := opt.gormDialect
 	if dialect == nil {
@@ -145,6 +179,7 @@ func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func
 
 	// 再次检查 context（可能在等待锁时被取消）
 	if err := ctx.Err(); err != nil {
+		holder.err = err
 		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
 	}
 
@@ -165,7 +200,7 @@ func Connect(option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, err
 // 当检测到连接断开时可使用此函数。
 func ConnectWithReconnect(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
 	if option == nil {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "db connect option empty")
+		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: connect option is empty")
 	}
 
 	// 先清理旧连接
@@ -186,7 +221,7 @@ func ConnectWith(dialect gorm.Dialector, option *Option) (*gorm.DB, error) {
 func Close(name string) error {
 	val, ok := dbRelation.LoadAndDelete(name)
 	if !ok {
-		return xerror.NewXCode(xcode.ErrDBConnect, fmt.Sprintf("db connection %q not found", name))
+		return xerror.NewXCode(xcode.ErrDBConnect, fmt.Sprintf("dbutil: connection %q not found", name))
 	}
 
 	holder := val.(*dbHolder)

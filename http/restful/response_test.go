@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -748,6 +749,25 @@ func TestWithErrorData_MarshalError(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &body)
 	assert.Nil(t, err)
 	assert.Contains(t, body["message"], "marshal failed")
+}
+
+func TestResponse_WithErrorData_CRLFFilter(t *testing.T) {
+	data := map[string]string{"inject": "hello\r\nX-Injected: true"}
+	w, c := newTestContext()
+	r := NewResponse(c)
+	r.WithErrorData(xerror.New("test"), data)
+	headerVal := w.Header().Get(ErrorDataHeaderKey)
+	assert.NotContains(t, headerVal, "\r")
+	assert.NotContains(t, headerVal, "\n")
+}
+
+func TestResponse_WithErrorData_SizeLimit(t *testing.T) {
+	largeData := map[string]string{"data": strings.Repeat("a", 5000)}
+	w, c := newTestContext()
+	r := NewResponse(c)
+	r.WithErrorData(xerror.New("test"), largeData)
+	headerVal := w.Header().Get(ErrorDataHeaderKey)
+	assert.LessOrEqual(t, len(headerVal), 4096)
 }
 
 // --- detectLanguage: X-Language header ---

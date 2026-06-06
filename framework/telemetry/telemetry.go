@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/log"
@@ -56,12 +57,20 @@ func (p *otelProvider) Shutdown(ctx context.Context) error {
 }
 
 // 全局 Provider，默认空操作（零开销）
-var globalProvider Provider = &noopProvider{}
+var (
+	globalProvider Provider = &noopProvider{}
+	globalMu       sync.RWMutex
+
+	providerSetCallbacks []func()
+	providerSetMu        sync.Mutex
+)
 
 // SetProvider 设置全局可观测性 Provider。
 // 同时自动同步 OTel 全局 TracerProvider 和 MeterProvider，确保第三方库也能受益。
 // 传入 nil 重置为 noopProvider。
 func SetProvider(p Provider) {
+	globalMu.Lock()
+
 	if p != nil {
 		globalProvider = p
 	} else {
@@ -75,10 +84,46 @@ func SetProvider(p Provider) {
 	if mp := globalProvider.MeterProvider(); mp != nil {
 		otel.SetMeterProvider(mp)
 	}
+
+	globalMu.Unlock()
+
+	// 解锁后通知回调，避免死锁
+	notifyProviderSet()
+}
+
+// OnProviderSet 注册回调函数，当 SetProvider 被调用时触发。
+// 回调在注册时立即执行一次，确保晚注册的模块也能感知当前 Provider。
+func OnProviderSet(fn func()) {
+	if fn == nil {
+		return
+	}
+
+	providerSetMu.Lock()
+	providerSetCallbacks = append(providerSetCallbacks, fn)
+	providerSetMu.Unlock()
+
+	// 立即执行一次（加读锁确保回调看到一致的 Provider 状态）
+	globalMu.RLock()
+	globalMu.RUnlock()
+	fn()
+}
+
+// notifyProviderSet 通知所有已注册的 OnProviderSet 回调。
+func notifyProviderSet() {
+	providerSetMu.Lock()
+	callbacks := make([]func(), len(providerSetCallbacks))
+	copy(callbacks, providerSetCallbacks)
+	providerSetMu.Unlock()
+
+	for _, fn := range callbacks {
+		fn()
+	}
 }
 
 // GetProvider 获取全局可观测性 Provider
 func GetProvider() Provider {
+	globalMu.RLock()
+	defer globalMu.RUnlock()
 	return globalProvider
 }
 
@@ -90,6 +135,14 @@ func Tracer(name string, opts ...trace.TracerOption) trace.Tracer {
 // Meter 快捷方式，返回 OTel 原生 metric.Meter
 func Meter(name string, opts ...metric.MeterOption) metric.Meter {
 	return GetProvider().MeterProvider().Meter(name, opts...)
+}
+
+// ResetProviderSetCallbacks clears all registered callbacks.
+// Exported for testing only — do not use in production code.
+func ResetProviderSetCallbacks() {
+	providerSetMu.Lock()
+	providerSetCallbacks = nil
+	providerSetMu.Unlock()
 }
 
 // noopProvider 未配置时的空操作实现

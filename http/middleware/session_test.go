@@ -74,7 +74,7 @@ func TestSessionWithSecretFromEnv_WithEnvSet(t *testing.T) {
 func TestResolveSessionDefaults(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		secure, httpOnly, sameSite := resolveSessionDefaults(SessionOption{})
-		assert.False(t, secure)
+		assert.True(t, secure)
 		assert.True(t, httpOnly)
 		assert.Equal(t, http.SameSiteLaxMode, sameSite)
 	})
@@ -119,4 +119,21 @@ func TestSessionWithStore_WithRequest(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestResolveSessionDefaults_SecureDefaultTrue(t *testing.T) {
+	secure, _, _ := resolveSessionDefaults(SessionOption{})
+	assert.True(t, secure, "Secure should default to true")
+}
+
+func TestResolveSessionDefaults_SecureExplicitFalse(t *testing.T) {
+	falsy := false
+	secure, _, _ := resolveSessionDefaults(SessionOption{Secure: &falsy})
+	assert.False(t, secure)
+}
+
+func TestResolveSessionDefaults_SecureExplicitTrue(t *testing.T) {
+	truthy := true
+	secure, _, _ := resolveSessionDefaults(SessionOption{Secure: &truthy})
+	assert.True(t, secure)
 }

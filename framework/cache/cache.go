@@ -15,18 +15,17 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/gomooth/pkg/framework/telemetry"
+	pkgxcode "github.com/gomooth/pkg/framework/xcode"
 	"github.com/gomooth/utils/strutil"
 
 	"github.com/gomooth/xerror"
 )
 
-var cacheMeter = telemetry.Meter("cache")
-
 var (
-	cacheHitCounter, _   = cacheMeter.Int64Counter("cache.hit")
-	cacheMissCounter, _  = cacheMeter.Int64Counter("cache.miss")
-	cacheSetCounter, _   = cacheMeter.Int64Counter("cache.set")
-	cacheEvictCounter, _ = cacheMeter.Int64Counter("cache.evict")
+	cacheHitCounter   metric.Int64Counter
+	cacheMissCounter  metric.Int64Counter
+	cacheSetCounter   metric.Int64Counter
+	cacheEvictCounter metric.Int64Counter
 )
 
 // NeverExpire 永久缓存标记值，设置此值时缓存不会过期
@@ -36,6 +35,14 @@ var defaultExpireNs atomic.Int64
 
 func init() {
 	defaultExpireNs.Store(int64(5 * time.Minute))
+
+	telemetry.OnProviderSet(func() {
+		m := telemetry.Meter("cache")
+		cacheHitCounter, _ = m.Int64Counter("cache.core.hit")
+		cacheMissCounter, _ = m.Int64Counter("cache.core.miss")
+		cacheSetCounter, _ = m.Int64Counter("cache.core.set")
+		cacheEvictCounter, _ = m.Int64Counter("cache.core.evict")
+	})
 }
 
 func getDefaultExpire() time.Duration {
@@ -114,7 +121,7 @@ func (c *anyCache[T]) getKey(key string) string {
 
 func (c *anyCache[T]) Get(ctx context.Context, key string) (*T, time.Duration, error) {
 	if c.cacheManager == nil {
-		return nil, 0, xerror.New("cache: manager not initialized")
+		return nil, 0, xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
 
 	key = c.getKey(key)
@@ -134,7 +141,7 @@ func (c *anyCache[T]) Get(ctx context.Context, key string) (*T, time.Duration, e
 
 func (c *anyCache[T]) GetAndDelete(ctx context.Context, key string) (*T, error) {
 	if c.cacheManager == nil {
-		return nil, xerror.New("cache: manager not initialized")
+		return nil, xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
 
 	key = c.getKey(key)
@@ -152,7 +159,7 @@ func (c *anyCache[T]) GetAndDelete(ctx context.Context, key string) (*T, error) 
 
 func (c *anyCache[T]) Set(ctx context.Context, key string, val *T, expire time.Duration) error {
 	if c.cacheManager == nil {
-		return xerror.New("cache: manager not initialized")
+		return xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
 
 	// 永久缓存：跳过默认过期时间的替换
@@ -198,7 +205,7 @@ func (c *anyCache[T]) Remember(
 	fun func(ctx context.Context) (*T, error),
 ) (*T, error) {
 	if c.cacheManager == nil {
-		return nil, xerror.New("cache: manager not initialized")
+		return nil, xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
 
 	cacheKey := c.getKey(key)
@@ -258,7 +265,7 @@ func (c *anyCache[T]) Remember(
 
 func (c *anyCache[T]) Clear(ctx context.Context, key string) error {
 	if c.cacheManager == nil {
-		return xerror.New("cache: manager not initialized")
+		return xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
 
 	key = c.getKey(key)

@@ -343,7 +343,7 @@ func (r *response) WithError(err error) {
 // rebuildRequestBody 重建 Request.Body，使后续日志中间件能读取请求体
 // 仅当 httpcontext 中存在缓存的原始 body 数据时才重建，避免不必要的操作
 func rebuildRequestBody(c *gin.Context) {
-	stx, se := httpcontext.MustParse(c)
+	stx, se := httpcontext.Parse(c)
 	if se != nil {
 		return
 	}
@@ -427,6 +427,16 @@ func (r *response) detectLanguage() language.Tag {
 	return tag
 }
 
+// sanitizeHeaderValue 移除 header value 中的 CR 和 LF，防止 HTTP 响应分割攻击
+func sanitizeHeaderValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // WithErrorData 响应错误消息(HttpStatus!=200)，并在 header 中返回错误数据
 func (r *response) WithErrorData(err error, data any) {
 	bs, err1 := json.Marshal(data)
@@ -437,7 +447,13 @@ func (r *response) WithErrorData(err error, data any) {
 		return
 	}
 
-	r.ctx.Header(ErrorDataHeaderKey, string(bs))
+	filtered := sanitizeHeaderValue(string(bs))
+	const maxHeaderSize = 4096
+	if len(filtered) > maxHeaderSize {
+		filtered = filtered[:maxHeaderSize]
+	}
+
+	r.ctx.Header(ErrorDataHeaderKey, filtered)
 
 	r.WithError(err)
 }

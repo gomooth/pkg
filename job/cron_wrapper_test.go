@@ -193,10 +193,10 @@ func TestFromCommandJob_ProducesValidCronJob(t *testing.T) {
 			wantPanic: false,
 		},
 		{
-			name:      "nil 任务会 panic",
+			name:      "nil 任务通过 panic handler 恢复",
 			job:       nil,
 			args:      nil,
-			wantPanic: true,
+			wantPanic: false, // panic 被 recover 捕获,
 		},
 	}
 

@@ -14,7 +14,8 @@ type cronJobWrapper struct {
 	maxRetry uint8         // 最大重试次数
 	timeout  time.Duration // 整体重试循环超时，0 表示无超时
 
-	failedSaver func(jobName string, in []string, err error) // 错误记录器
+	panicHandler PanicHandlerFunc                              // panic 恢复处理器
+	failedSaver  func(jobName string, in []string, err error) // 错误记录器
 
 	log *slog.Logger
 }
@@ -31,19 +32,21 @@ func NewCronJobWrapper(opts ...WrapperOption) IWrapper {
 }
 
 // FromCommandJob 将 ICommandJob 转换为 cron.Job，支持重试和超时控制
-func (w *cronJobWrapper) FromCommandJob(_ context.Context, job ICommandJob, args ...string) cron.Job {
+func (w *cronJobWrapper) FromCommandJob(ctx context.Context, job ICommandJob, args ...string) cron.Job {
 	name := "unknown"
 	if job != nil {
 		name = strings.Trim(fmt.Sprintf("%T", job), "*")
 	}
 
 	return &commandJob{
-		jobName:     name,
-		job:         job,
-		args:        args,
-		maxRetry:    w.maxRetry,
-		timeout:     w.timeout,
-		failedSaver: w.failedSaver,
-		log:         w.log,
+		jobName:      name,
+		job:          job,
+		args:         args,
+		maxRetry:     w.maxRetry,
+		timeout:      w.timeout,
+		ctx:          ctx,
+		panicHandler: w.panicHandler,
+		failedSaver:  w.failedSaver,
+		log:          w.log,
 	}
 }

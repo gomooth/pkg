@@ -230,3 +230,18 @@ func TestFilterXSS_RouteMatching(t *testing.T) {
 	result2 := h.filterXSS("/user-admin", "name", "<b>hello</b>")
 	assert.NotContains(t, result2, "<b>")
 }
+
+func TestSanitizeFilename(t *testing.T) {
+	t.Run("removes CRLF", func(t *testing.T) {
+		result := sanitizeFilename("hello\r\nX-Injected: true.txt")
+		assert.Equal(t, "helloX-Injected: true.txt", result)
+	})
+	t.Run("removes null bytes", func(t *testing.T) {
+		result := sanitizeFilename("file\x00name.txt")
+		assert.Equal(t, "filename.txt", result)
+	})
+	t.Run("clean filename unchanged", func(t *testing.T) {
+		result := sanitizeFilename("report.pdf")
+		assert.Equal(t, "report.pdf", result)
+	})
+}

@@ -13,6 +13,15 @@ import (
 
 const StoreType = "ttlcache"
 
+// 缓存指标命名约定：所有缓存相关指标统一使用 cache.<subsystem>.<metric> 前缀。
+//
+// 当前各子系统的指标前缀：
+//   - cache.core.*      — framework/cache 通用缓存（hit, miss, set, evict）
+//   - cache.dbcache.*   — framework/dbcache 数据库缓存（hit, miss, renew, write, error_cache.hit, operation.duration）
+//   - cache.httpcache.* — http/middleware/internal/httpcache HTTP 响应缓存（hit, miss, write, error）
+//
+// 新增缓存模块的指标应遵循此命名规范，确保监控系统能够通过 cache.* 前缀统一聚合。
+
 // ttlCacheStore implements store.StoreInterface using jellydator/ttlcache as the backend.
 // Replaces the unmaintained patrickmn/go-cache store adapter.
 type ttlCacheStore struct {
@@ -67,30 +76,25 @@ func (s *ttlCacheStore) Set(ctx context.Context, key any, value any, options ...
 func (s *ttlCacheStore) setTags(ctx context.Context, key any, tags []string) {
 	for _, tag := range tags {
 		tagKey := fmt.Sprintf("gocache_tag_%s", tag)
-		var cacheKeys map[string]struct{}
 
+		s.mu.Lock()
+		var cacheKeys map[string]struct{}
 		if result, err := s.Get(ctx, tagKey); err == nil {
 			if m, ok := result.(map[string]struct{}); ok {
-				cacheKeys = m
+				// Copy-on-write: create a new map to avoid modifying shared reference
+				newKeys := make(map[string]struct{}, len(m)+1)
+				for k, v := range m {
+					newKeys[k] = v
+				}
+				cacheKeys = newKeys
 			}
 		}
-
-		s.mu.RLock()
-		if _, exists := cacheKeys[key.(string)]; exists {
-			s.mu.RUnlock()
-			continue
-		}
-		s.mu.RUnlock()
-
 		if cacheKeys == nil {
 			cacheKeys = make(map[string]struct{})
 		}
-
-		s.mu.Lock()
 		cacheKeys[key.(string)] = struct{}{}
-		s.mu.Unlock()
-
 		s.client.Set(tagKey, cacheKeys, 720*time.Hour)
+		s.mu.Unlock()
 	}
 }
 
@@ -115,11 +119,11 @@ func (s *ttlCacheStore) Invalidate(ctx context.Context, options ...store.Invalid
 				cacheKeys = m
 			}
 
-			s.mu.RLock()
+			s.mu.Lock()
 			for cacheKey := range cacheKeys {
 				_ = s.Delete(ctx, cacheKey)
 			}
-			s.mu.RUnlock()
+			s.mu.Unlock()
 		}
 	}
 

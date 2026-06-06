@@ -13,11 +13,12 @@ import (
 )
 
 type handler struct {
-	allowOriginFunc func(origin string) bool
-	allowMethods    []string
-	allowHeaders    []string
-	exposeHeaders   []string
-	maxAge          time.Duration
+	allowOriginFunc  func(origin string) bool
+	allowCredentials *bool // nil 使用默认值 true
+	allowMethods     []string
+	allowHeaders     []string
+	exposeHeaders    []string
+	maxAge           time.Duration
 }
 
 func New(opts ...Option) gin.HandlerFunc {
@@ -55,12 +56,29 @@ func New(opts ...Option) gin.HandlerFunc {
 	return cors.New(h.getCORSConfig())
 }
 
+// isWildcardOriginFunc 检查 AllowOriginFunc 是否为通配（对所有 origin 返回 true）
+func (ch handler) isWildcardOriginFunc() bool {
+	if ch.allowOriginFunc == nil {
+		return false
+	}
+	return ch.allowOriginFunc("https://evil.com") && ch.allowOriginFunc("https://attacker.net")
+}
+
 func (ch handler) getCORSConfig() cors.Config {
+	credentials := true
+	if ch.allowCredentials != nil {
+		credentials = *ch.allowCredentials
+	}
+
+	if credentials && ch.isWildcardOriginFunc() {
+		slog.Warn("cors: AllowCredentials=true with wildcard AllowOriginFunc is a CSRF risk. Consider restricting allowed origins or disabling credentials.")
+	}
+
 	return cors.Config{
 		AllowOriginFunc:  ch.allowOriginFunc,
 		AllowMethods:     sliceutil.Unique(ch.allowMethods),
 		AllowHeaders:     sliceutil.Unique(ch.allowHeaders),
-		AllowCredentials: true,
+		AllowCredentials: credentials,
 		ExposeHeaders:    sliceutil.Unique(ch.exposeHeaders),
 		MaxAge:           ch.maxAge,
 	}

@@ -16,8 +16,8 @@ const (
 	RequestRawBodyDataKey = "request_raw_body"
 )
 
-// MustParse 从 gin 上下文中解析自定义上下文
-func MustParse(ctx context.Context) (IHttpContext, error) {
+// Parse 从 gin 上下文中解析自定义上下文
+func Parse(ctx context.Context) (IHttpContext, error) {
 	gtx, ok := ctx.(*gin.Context)
 	if !ok {
 		return nil, xerror.NewXCode(xcode.InternalServerError, "to GinContext failed")

@@ -2,6 +2,7 @@ package httpcache
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,14 +21,22 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-var httpCacheMeter = telemetry.Meter("httpcache")
-
 var (
-	httpCacheHitCounter, _    = httpCacheMeter.Int64Counter("httpcache.hit")
-	httpCacheMissCounter, _   = httpCacheMeter.Int64Counter("httpcache.miss")
-	httpCacheWriteCounter, _  = httpCacheMeter.Int64Counter("httpcache.write")
-	httpCacheErrorCounter, _  = httpCacheMeter.Int64Counter("httpcache.error")
+	httpCacheHitCounter   metric.Int64Counter
+	httpCacheMissCounter  metric.Int64Counter
+	httpCacheWriteCounter metric.Int64Counter
+	httpCacheErrorCounter metric.Int64Counter
 )
+
+func init() {
+	telemetry.OnProviderSet(func() {
+		m := telemetry.Meter("httpcache")
+		httpCacheHitCounter, _ = m.Int64Counter("cache.httpcache.hit")
+		httpCacheMissCounter, _ = m.Int64Counter("cache.httpcache.miss")
+		httpCacheWriteCounter, _ = m.Int64Counter("cache.httpcache.write")
+		httpCacheErrorCounter, _ = m.Int64Counter("cache.httpcache.error")
+	})
+}
 
 type handler struct {
 	debug                 bool
@@ -103,23 +112,7 @@ func NewWithCloser(opts ...Option) (gin.HandlerFunc, func() error) {
 			return
 		}
 
-		c.Writer.WriteHeader(respCache.Status)
-
-		if !f.withoutResponseHeader {
-			for key, values := range respCache.Header {
-				for _, val := range values {
-					c.Writer.Header().Set(key, val)
-				}
-			}
-		}
-
-		if _, err := c.Writer.Write(respCache.Data); err != nil {
-			slog.Error("http cache write response failed", slog.String("component", "httpcache"), slog.String("error", err.Error()))
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"message": "internal cache error",
-			})
-			return
-		}
+		f.replyWithCache(c, respCache)
 
 		// 跳出，不走后续的中间件
 		c.Abort()
@@ -135,13 +128,22 @@ func NewWithCloser(opts ...Option) (gin.HandlerFunc, func() error) {
 	return handlerFunc, closeFn
 }
 
+// matchRoute 精确匹配路由，避免 HasPrefix 误匹配。
+// /api/user 匹配 /api/user 和 /api/user/xxx，但不匹配 /api/user-profile
+func matchRoute(requestPath, route string) bool {
+	if requestPath == route {
+		return true
+	}
+	return strings.HasPrefix(requestPath, route+"/")
+}
+
 func (h *handler) getCacheStrategy(ctx *gin.Context) (*strategy, error) {
 	fullPath := ctx.FullPath()
 	method := ctx.Request.Method
 
-	// 只缓存 get/delete 成功的请求
-	if method != http.MethodGet && method != http.MethodDelete {
-		h.debugf("http method is not GET/DELETE, skip. url=[%s]%s", method, fullPath)
+	// 只缓存 GET 成功的请求
+	if method != http.MethodGet {
+		h.debugf("http method is not GET, skip. url=[%s]%s", method, fullPath)
 		return &strategy{
 			NeedCached: false,
 		}, nil
@@ -150,7 +152,7 @@ func (h *handler) getCacheStrategy(ctx *gin.Context) (*strategy, error) {
 	// 获取路由单独的缓存策略，如果存在多个，则以最后一个为准
 	var rule *ruleItem
 	for _, route := range h.routeList {
-		if strings.Contains(fullPath, route) {
+		if matchRoute(fullPath, route) {
 			rule = h.routePolicies[route]
 		}
 	}
@@ -199,7 +201,7 @@ func (h *handler) getCacheStrategy(ctx *gin.Context) (*strategy, error) {
 		userID = uid
 	}
 
-	cacheKey := ctx.Request.URL.Path + ":" + params.Encode()
+	cacheKey := method + ":" + ctx.Request.URL.Path + ":" + params.Encode()
 	if userID > 0 {
 		cacheKey += ":uid=" + strconv.Itoa(int(userID))
 	}
@@ -233,7 +235,11 @@ func (h *handler) debugf(format string, vals ...interface{}) {
 func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.CachedResponse, error) {
 	cacheKey := h.getCacheKey(strategy.CacheKey)
 
+	isFirst := false
+
 	data, err, _ := sf.Do(cacheKey, func() (any, error) {
+		isFirst = true
+
 		// 限制 QPS = 1s/h.singleFlightTimeout
 		if h.singleFlightTimeout > 0 {
 			timer := time.AfterFunc(h.singleFlightTimeout, func() {
@@ -251,7 +257,7 @@ func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.Cache
 			return &respCache, nil
 		}
 
-		if err != store.ErrorCacheMiss {
+		if !errors.Is(err, store.ErrorCacheMiss) {
 			httpCacheErrorCounter.Add(c.Request.Context(), 1, metric.WithAttributes(attribute.String("phase", "get")))
 			return nil, xerror.Wrapf(err, "get http cache failed, key=%s", cacheKey)
 		}
@@ -279,8 +285,7 @@ func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.Cache
 		}
 		httpCacheWriteCounter.Add(c.Request.Context(), 1, metric.WithAttributes(attribute.String("result", "success")))
 
-		// 从请求链中获取的数据，直接跳过。防止响应重复
-		h.debugf("not cache, save cache and redirect next, key=%s", cacheKey)
+		// 首个请求已由 c.Next() 响应，返回 nil 让外层知道无需再处理
 		return nil, nil
 	})
 
@@ -292,12 +297,26 @@ func (h *handler) cached(c *gin.Context, strategy *strategy) (bool, *store.Cache
 		return false, nil, err
 	}
 
-	// 不需要缓存
-	if data == nil {
+	// 缓存命中（singleflight 内部已读缓存）
+	if data != nil {
+		return true, data.(*store.CachedResponse), nil
+	}
+
+	// 首个请求：c.Next() 已执行并写入响应，外层无需再处理
+	if isFirst {
 		return false, nil, nil
 	}
 
-	return true, data.(*store.CachedResponse), nil
+	// 后续请求：singleflight 已完成，缓存已写入，补读缓存
+	var respCache store.CachedResponse
+	if err := h.store.Get(c.Request.Context(), cacheKey, &respCache); err == nil {
+		h.debugf("hit cache after singleflight, key=%s", cacheKey)
+		httpCacheHitCounter.Add(c.Request.Context(), 1)
+		return true, &respCache, nil
+	}
+
+	// 首个请求可能返回非成功状态码，未写入缓存
+	return false, nil, nil
 }
 
 func (h *handler) getCacheKey(key string) string {

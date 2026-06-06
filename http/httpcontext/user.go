@@ -9,7 +9,7 @@ type User struct {
 	Name    string
 	Roles   []IRole
 
-	IP     string            // 用户登录ID
+	IP     string            // 用户登录IP
 	Extend map[string]string // 扩展信息
 }
 

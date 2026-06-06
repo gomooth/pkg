@@ -63,7 +63,7 @@ func (m *manager) Run(ctx context.Context) error {
 		if err != nil {
 			m.log.Error("Server app start failed", slog.String("component", "app"), slog.Int("index", i), slog.String("error", err.Error()))
 			// 逆序关闭已启动的 app（使用 shutdownTimeout 防止阻塞）
-			cleanupCtx, cleanupCancel := context.WithTimeout(ctx, m.shutdownTimeout)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), m.shutdownTimeout)
 			for j := i - 1; j >= 0; j-- {
 				if err := m.apps[j].Shutdown(cleanupCtx); err != nil {
 					m.log.Error("Server app shutdown failed", slog.String("component", "app"), slog.Int("index", j), slog.String("error", err.Error()))
@@ -86,7 +86,7 @@ func (m *manager) Run(ctx context.Context) error {
 	<-quit
 	m.log.Info("Server shutting down...")
 
-	shutdownCtx, cancel := context.WithTimeout(ctx, m.shutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), m.shutdownTimeout)
 	defer cancel()
 
 	var shutdownErrs []error

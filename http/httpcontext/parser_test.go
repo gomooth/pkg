@@ -9,18 +9,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMustParse(t *testing.T) {
+func TestParse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	t.Run("non-gin context returns error", func(t *testing.T) {
-		_, err := MustParse(context.Background())
+		_, err := Parse(context.Background())
 		assert.Error(t, err)
 	})
 
 	t.Run("gin context without httpcontext returns error", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		_, err := MustParse(c)
+		_, err := Parse(c)
 		assert.Error(t, err)
 	})
 
@@ -29,7 +29,7 @@ func TestMustParse(t *testing.T) {
 		c, _ := gin.CreateTestContext(w)
 		stx := NewContext(WithUser(&User{ID: 1}))
 		c.Set(ContextKey, stx)
-		got, err := MustParse(c)
+		got, err := Parse(c)
 		assert.NoError(t, err)
 		assert.Equal(t, uint(1), got.User().ID)
 	})
@@ -38,7 +38,7 @@ func TestMustParse(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Set(ContextKey, "not an httpcontext")
-		_, err := MustParse(c)
+		_, err := Parse(c)
 		assert.Error(t, err)
 	})
 
@@ -47,7 +47,7 @@ func TestMustParse(t *testing.T) {
 		c, _ := gin.CreateTestContext(w)
 		// Set a nil value with the key — gin.Get returns (nil, true)
 		c.Set(ContextKey, nil)
-		_, err := MustParse(c)
+		_, err := Parse(c)
 		assert.Error(t, err)
 	})
 }

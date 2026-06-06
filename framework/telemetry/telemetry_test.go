@@ -73,3 +73,58 @@ func TestMeter_ReturnsOtelMeter(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, counter)
 }
+
+func TestOnProviderSet_NilCallback(t *testing.T) {
+	assert.NotPanics(t, func() {
+		OnProviderSet(nil)
+	})
+}
+
+func TestOnProviderSet_ImmediateExecution(t *testing.T) {
+	defer ResetProviderSetCallbacks()
+
+	// OnProviderSet 注册回调时应立即执行一次
+	var count int
+	OnProviderSet(func() {
+		count++
+	})
+	assert.Equal(t, 1, count)
+}
+
+func TestOnProviderSet_SetProviderTriggersCallback(t *testing.T) {
+	defer ResetProviderSetCallbacks()
+
+	// SetProvider 调用应触发已注册的回调
+	original := GetProvider()
+	defer SetProvider(original)
+
+	var count int
+	OnProviderSet(func() {
+		count++
+	})
+	// count=1 来自注册时的立即执行
+	assert.Equal(t, 1, count)
+
+	SetProvider(&noopProvider{})
+	// SetProvider 触发回调，count 应为 2
+	assert.Equal(t, 2, count)
+}
+
+func TestOnProviderSet_SetProviderNilTriggersCallback(t *testing.T) {
+	defer ResetProviderSetCallbacks()
+
+	// SetProvider(nil) 也应触发回调
+	original := GetProvider()
+	defer SetProvider(original)
+
+	var count int
+	OnProviderSet(func() {
+		count++
+	})
+	// count=1 来自注册时的立即执行
+	assert.Equal(t, 1, count)
+
+	SetProvider(nil)
+	// SetProvider(nil) 触发回调，count 应为 2
+	assert.Equal(t, 2, count)
+}

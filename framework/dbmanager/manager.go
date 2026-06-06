@@ -46,3 +46,31 @@ func (m *memoryManager) Get(name string) (*gorm.DB, error) {
 	}
 	return db, nil
 }
+
+// Unregister 注销数据库连接
+func (m *memoryManager) Unregister(name string) error {
+	if name == "" {
+		return xerror.NewXCode(xcode.ErrDBConnect, "dbmanager: connection name cannot be empty")
+	}
+	m.connections.Delete(name)
+	return nil
+}
+
+// CloseAll 关闭所有数据库连接
+func (m *memoryManager) CloseAll() error {
+	var firstErr error
+	m.connections.Range(func(key, value any) bool {
+		db, ok := value.(*gorm.DB)
+		if !ok {
+			return true
+		}
+		if sqlDB, err := db.DB(); err == nil {
+			if closeErr := sqlDB.Close(); closeErr != nil && firstErr == nil {
+				firstErr = closeErr
+			}
+		}
+		m.connections.Delete(key)
+		return true
+	})
+	return firstErr
+}
