@@ -6,7 +6,8 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/kafka/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 )
 
 // retryStrategy 重试策略接口（未导出）
@@ -32,8 +33,8 @@ type syncRetryStrategy struct {
 	maxRetry        int
 	backoff         retry.BackoffStrategy
 	maxTotalTimeout time.Duration
-	logger          internal.Logger
-	metrics         *internal.ConsumerMetrics
+	logger          logutil.Logger
+	metrics         *metrics.ConsumerMetrics
 	failedHandler   FailedHandlerFunc
 	deadLetter      DeadLetterHandler
 }
@@ -44,8 +45,8 @@ func newSyncRetryStrategy(
 	maxRetry int,
 	backoff retry.BackoffStrategy,
 	maxTotalTimeout time.Duration,
-	logger internal.Logger,
-	metrics *internal.ConsumerMetrics,
+	logger logutil.Logger,
+	metrics *metrics.ConsumerMetrics,
 ) *syncRetryStrategy {
 	return &syncRetryStrategy{
 		consumerGroup:   cg,
@@ -140,8 +141,8 @@ func handleExhausted(
 	lastErr error,
 	deadLetter DeadLetterHandler,
 	failedHandler FailedHandlerFunc,
-	logger internal.Logger,
-	metrics *internal.ConsumerMetrics,
+	logger logutil.Logger,
+	metrics *metrics.ConsumerMetrics,
 ) exhaustedResult {
 	if metrics != nil {
 		metrics.OnDeadLetter()
@@ -160,8 +161,6 @@ func handleExhausted(
 
 	if failedHandler != nil {
 		failedHandler(ctx, consumerGroup, topic, message, lastErr)
-	} else if logger != nil {
-		logger.Error("event handle failed after retries", "topic", topic, "error", lastErr)
 	}
 	return exhaustedHandled
 }

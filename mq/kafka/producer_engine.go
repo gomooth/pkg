@@ -10,6 +10,7 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 	"github.com/gomooth/xerror"
 	"go.opentelemetry.io/otel/codes"
@@ -37,7 +38,7 @@ type producerEngine struct {
 	wg         sync.WaitGroup
 
 	reconnectCh chan struct{}
-	metrics     *internal.ProducerMetrics
+	metrics     *metrics.ProducerMetrics
 }
 
 // 编译时接口检查
@@ -68,7 +69,7 @@ func newProducerEngine(brokers []string, cfg *producerConfig) *producerEngine {
 		logger:      logger,
 		config:      saramaConfig,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 }
 

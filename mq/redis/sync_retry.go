@@ -5,7 +5,8 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/redis/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 )
 
 // retryStrategy 重试策略接口（未导出）
@@ -29,8 +30,8 @@ func handleExhausted(
 	lastErr error,
 	deadLetter DeadLetterHandler,
 	failedHandler FailedHandlerFunc,
-	logger internal.Logger,
-	metrics *internal.ConsumerMetrics,
+	logger logutil.Logger,
+	metrics *metrics.ConsumerMetrics,
 ) exhaustedResult {
 	if metrics != nil {
 		metrics.OnDeadLetter()
@@ -49,8 +50,6 @@ func handleExhausted(
 
 	if failedHandler != nil {
 		failedHandler(ctx, queue, message, lastErr)
-	} else if logger != nil {
-		logger.Error("event handle failed after retries", "queue", queue, "error", lastErr)
 	}
 	return exhaustedContinue
 }
@@ -68,8 +67,8 @@ type syncRetryStrategy struct {
 	handler        IHandler
 	maxRetry       int
 	backoff        retry.BackoffStrategy
-	logger         internal.Logger
-	metrics        *internal.ConsumerMetrics
+	logger         logutil.Logger
+	metrics        *metrics.ConsumerMetrics
 	failedHandler  FailedHandlerFunc
 	deadLetter     DeadLetterHandler
 	handlerTimeout time.Duration
@@ -79,8 +78,8 @@ func newSyncRetryStrategy(
 	handler IHandler,
 	maxRetry int,
 	backoff retry.BackoffStrategy,
-	logger internal.Logger,
-	metrics *internal.ConsumerMetrics,
+	logger logutil.Logger,
+	metrics *metrics.ConsumerMetrics,
 ) *syncRetryStrategy {
 	return &syncRetryStrategy{
 		handler:  handler,

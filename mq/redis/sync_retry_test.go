@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/redis/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -21,7 +21,7 @@ func TestSyncRetryStrategy_Success(t *testing.T) {
 		}),
 		3,
 		&retry.FixedDelay{Wait: time.Millisecond},
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
@@ -42,7 +42,7 @@ func TestSyncRetryStrategy_RetryThenSuccess(t *testing.T) {
 		}),
 		5,
 		&retry.FixedDelay{Wait: time.Millisecond},
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
@@ -60,7 +60,7 @@ func TestSyncRetryStrategy_Exhausted(t *testing.T) {
 		}),
 		2,
 		&retry.FixedDelay{Wait: time.Millisecond},
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 	strategy.SetFailedHandler(func(ctx context.Context, queue string, message []byte, err error) {
@@ -79,7 +79,7 @@ func TestSyncRetryStrategy_ContextCancel(t *testing.T) {
 		}),
 		100,
 		&retry.FixedDelay{Wait: 10 * time.Millisecond},
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
@@ -99,7 +99,7 @@ func TestSyncRetryStrategy_HandlerTimeout(t *testing.T) {
 		}),
 		0,
 		&retry.FixedDelay{Wait: time.Millisecond},
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 	strategy.handlerTimeout = 10 * time.Millisecond

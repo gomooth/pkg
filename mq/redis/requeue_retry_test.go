@@ -9,7 +9,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/redis/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +29,7 @@ func TestRequeueRetryStrategy_Success(t *testing.T) {
 		&retry.FixedDelay{Wait: time.Millisecond},
 		client,
 		"queue:",
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
@@ -56,7 +56,7 @@ func TestRequeueRetryStrategy_RequeueThenSuccess(t *testing.T) {
 		&retry.FixedDelay{Wait: time.Millisecond},
 		client,
 		"queue:",
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
@@ -86,7 +86,7 @@ func TestRequeueRetryStrategy_Exhausted(t *testing.T) {
 		&retry.FixedDelay{Wait: time.Millisecond},
 		client,
 		"queue:",
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 	strategy.SetFailedHandler(func(ctx context.Context, queue string, message []byte, err error) {
@@ -118,7 +118,7 @@ func TestRequeueRetryStrategy_ContextCancel(t *testing.T) {
 		&retry.FixedDelay{Wait: 10 * time.Millisecond},
 		client,
 		"queue:",
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 

@@ -8,7 +8,8 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/kafka/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 )
 
 // groupHandler sarama.ConsumerGroupHandler 适配器（未导出）
@@ -30,7 +31,7 @@ type groupHandlerConf struct {
 	RetryMode                RetryMode
 	RetryWorkers             int
 	RetryStore               RetryStore
-	Metrics                  *internal.ConsumerMetrics
+	Metrics                  *metrics.ConsumerMetrics
 	HandlerTimeout           time.Duration
 	SyncRetryMaxTotalTimeout time.Duration
 }
@@ -45,7 +46,13 @@ func newGroupHandler(cg string, conf *groupHandlerConf) *groupHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	internalLogger := internal.NewSlogLogger(logger)
+	internalLogger := logutil.NewSlogLogger(logger)
+
+	// 注入默认 failedHandler（若用户未设置）
+	failedHandler := conf.FailedHandler
+	if failedHandler == nil {
+		failedHandler = DefaultFailedHandlerFunc(internalLogger)
+	}
 
 	var strategy retryStrategy
 
@@ -65,7 +72,7 @@ func newGroupHandler(cg string, conf *groupHandlerConf) *groupHandler {
 		}
 		engine := newAsyncRetryEngineWithStore(cg, conf.Handler, conf.MaxRetry, backoff,
 			conf.HandlerTimeout, numWorkers, store, internalLogger, conf.Metrics)
-		engine.SetFailedHandler(conf.FailedHandler)
+		engine.SetFailedHandler(failedHandler)
 		engine.SetDeadLetterHandler(conf.DeadLetter)
 		strategy = engine
 	default: // RetryModeSync
@@ -76,7 +83,7 @@ func newGroupHandler(cg string, conf *groupHandlerConf) *groupHandler {
 		}
 		s := newSyncRetryStrategy(cg, conf.Handler, conf.MaxRetry, backoff,
 			conf.SyncRetryMaxTotalTimeout, internalLogger, conf.Metrics)
-		s.SetFailedHandler(conf.FailedHandler)
+		s.SetFailedHandler(failedHandler)
 		s.SetDeadLetterHandler(conf.DeadLetter)
 		strategy = s
 	}

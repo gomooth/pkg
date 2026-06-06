@@ -3,10 +3,12 @@ package internal
 import (
 	"log/slog"
 	"testing"
+
+	"github.com/gomooth/pkg/mq/internal/logutil"
 )
 
 func TestWatermarkTracker_MarkSuccessAdvances(t *testing.T) {
-	tracker := NewWatermarkTracker(NewSlogLogger(slog.Default()))
+	tracker := NewWatermarkTracker(logutil.NewSlogLogger(slog.Default()))
 
 	tracker.MarkSuccess("test", 0, 5)
 	wm, ok := tracker.Watermark("test", 0)
@@ -16,7 +18,7 @@ func TestWatermarkTracker_MarkSuccessAdvances(t *testing.T) {
 }
 
 func TestWatermarkTracker_PendingBlocksWatermark(t *testing.T) {
-	tracker := NewWatermarkTracker(NewSlogLogger(slog.Default()))
+	tracker := NewWatermarkTracker(logutil.NewSlogLogger(slog.Default()))
 
 	// 标记 1,3 为 pending
 	tracker.MarkPending("test", 0, 1)
@@ -40,7 +42,7 @@ func TestWatermarkTracker_PendingBlocksWatermark(t *testing.T) {
 }
 
 func TestWatermarkTracker_ResetPartition(t *testing.T) {
-	tracker := NewWatermarkTracker(NewSlogLogger(slog.Default()))
+	tracker := NewWatermarkTracker(logutil.NewSlogLogger(slog.Default()))
 
 	tracker.MarkSuccess("test", 0, 5)
 	wm, ok := tracker.Watermark("test", 0)

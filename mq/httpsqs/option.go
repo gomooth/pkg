@@ -6,6 +6,7 @@ import (
 
 	"github.com/gomooth/httpsqs"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
 // ==================== Consumer 选项 ====================
@@ -19,10 +20,10 @@ type consumerConfig struct {
 	client          httpsqs.IClient // 全局 HTTPSQS 客户端（必填）
 	maxRetry        int
 	backoff         retry.BackoffStrategy
-	retryMode       RetryMode
+	retryMode       types.RetryMode
 	handlerTimeout  time.Duration
 	emptyQueueSleep time.Duration
-	failedHandler   FailedHandlerFunc
+	failedHandler   types.FailedHandlerFunc
 	panicHandler    func(any)
 	consumers       []ConsumerRegistration
 }
@@ -49,7 +50,7 @@ func WithBackoff(b retry.BackoffStrategy) ConsumerOption {
 }
 
 // WithRetryMode 设置重试模式（默认 RetryModeSync）
-func WithRetryMode(mode RetryMode) ConsumerOption {
+func WithRetryMode(mode types.RetryMode) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.retryMode = mode
 	}
@@ -79,7 +80,7 @@ func WithEmptyQueueSleep(d time.Duration) ConsumerOption {
 }
 
 // WithFailedHandler 设置重试耗尽后的失败处理回调
-func WithFailedHandler(fn FailedHandlerFunc) ConsumerOption {
+func WithFailedHandler(fn types.FailedHandlerFunc) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.failedHandler = fn
 	}
@@ -93,7 +94,7 @@ func WithConsumers(regs ...ConsumerRegistration) ConsumerOption {
 }
 
 // WithConsumer 预注册单个消费者
-func WithConsumer(queue string, handler IHandler, opts ...QueueOption) ConsumerOption {
+func WithConsumer(queue string, handler types.IHandler, opts ...types.QueueOption) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.consumers = append(c.consumers, ConsumerRegistration{
 			Queue:   queue,
@@ -107,51 +108,5 @@ func WithConsumer(queue string, handler IHandler, opts ...QueueOption) ConsumerO
 func WithConsumerLogger(l *slog.Logger) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.logger = l
-	}
-}
-
-// ==================== Queue 选项（队列级别覆盖） ====================
-
-// queueConfig 单队列级别配置（未导出）
-type queueConfig struct {
-	client    httpsqs.IClient // 队列级别 HTTPSQS 客户端
-	maxRetry  *int            // nil 表示使用全局默认
-	backoff   retry.BackoffStrategy
-	retryMode *RetryMode // nil 表示使用全局默认
-	failedFn  FailedHandlerFunc
-}
-
-// WithQueueHTTPSQSClient 为指定队列设置独立的 HTTPSQS 客户端
-func WithQueueHTTPSQSClient(client httpsqs.IClient) QueueOption {
-	return func(c *queueConfig) {
-		c.client = client
-	}
-}
-
-// WithQueueMaxRetry 为指定队列设置最大重试次数
-func WithQueueMaxRetry(n int) QueueOption {
-	return func(c *queueConfig) {
-		c.maxRetry = &n
-	}
-}
-
-// WithQueueBackoff 为指定队列设置退避策略
-func WithQueueBackoff(b retry.BackoffStrategy) QueueOption {
-	return func(c *queueConfig) {
-		c.backoff = b
-	}
-}
-
-// WithQueueRetryMode 为指定队列设置重试模式
-func WithQueueRetryMode(mode RetryMode) QueueOption {
-	return func(c *queueConfig) {
-		c.retryMode = &mode
-	}
-}
-
-// WithQueueFailedHandler 为指定队列设置失败处理器
-func WithQueueFailedHandler(fn FailedHandlerFunc) QueueOption {
-	return func(c *queueConfig) {
-		c.failedFn = fn
 	}
 }

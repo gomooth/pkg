@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/redis/internal"
+	"github.com/gomooth/pkg/mq/internal/attempt_tracker"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -17,12 +19,12 @@ type requeueRetryStrategy struct {
 	backoff        retry.BackoffStrategy
 	client         *redis.Client
 	queuePrefix    string
-	logger         internal.Logger
-	metrics        *internal.ConsumerMetrics
+	logger         logutil.Logger
+	metrics        *metrics.ConsumerMetrics
 	failedHandler  FailedHandlerFunc
 	deadLetter     DeadLetterHandler
 	handlerTimeout time.Duration
-	tracker        *internal.AttemptTracker
+	tracker        *attempt_tracker.AttemptTracker
 }
 
 func newRequeueRetryStrategy(
@@ -31,8 +33,8 @@ func newRequeueRetryStrategy(
 	backoff retry.BackoffStrategy,
 	client *redis.Client,
 	queuePrefix string,
-	logger internal.Logger,
-	metrics *internal.ConsumerMetrics,
+	logger logutil.Logger,
+	metrics *metrics.ConsumerMetrics,
 ) *requeueRetryStrategy {
 	return &requeueRetryStrategy{
 		handler:     handler,
@@ -42,7 +44,7 @@ func newRequeueRetryStrategy(
 		queuePrefix: queuePrefix,
 		logger:      logger,
 		metrics:     metrics,
-		tracker:     internal.NewAttemptTracker(),
+		tracker:     attempt_tracker.NewAttemptTracker(),
 	}
 }
 
@@ -61,7 +63,7 @@ func (s *requeueRetryStrategy) OnMessage(ctx context.Context, queue string, data
 	cancel()
 
 	if err == nil {
-		key := internal.MessageKey(data)
+		key := attempt_tracker.MessageKey(string(data))
 		s.tracker.Remove(key)
 		if s.metrics != nil {
 			s.metrics.OnConsume()
@@ -70,7 +72,7 @@ func (s *requeueRetryStrategy) OnMessage(ctx context.Context, queue string, data
 	}
 
 	// 处理失败，检查重试次数
-	key := internal.MessageKey(data)
+	key := attempt_tracker.MessageKey(string(data))
 	attempt := s.tracker.Increment(key)
 
 	if attempt < s.maxRetry {
@@ -117,4 +119,11 @@ func (s *requeueRetryStrategy) OnMessage(ctx context.Context, queue string, data
 	handleExhausted(ctx, queue, data, err,
 		s.deadLetter, s.failedHandler, s.logger, s.metrics)
 	return nil
+}
+
+// Close 停止 AttemptTracker 的后台清理 goroutine
+func (s *requeueRetryStrategy) Close() {
+	if s.tracker != nil {
+		s.tracker.Close()
+	}
 }

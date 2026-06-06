@@ -1,8 +1,8 @@
-package internal
+package logutil
 
 import "log/slog"
 
-// Logger 内部使用的日志接口
+// Logger MQ 模块内部使用的日志接口
 type Logger interface {
 	Debug(msg string, args ...any)
 	Info(msg string, args ...any)
@@ -15,7 +15,12 @@ type slogLogger struct {
 	l *slog.Logger
 }
 
+// NewSlogLogger 创建 Logger 实例。
+// 如果 l 为 nil，则使用 slog.Default()。
 func NewSlogLogger(l *slog.Logger) Logger {
+	if l == nil {
+		l = slog.Default()
+	}
 	return &slogLogger{l: l}
 }
 

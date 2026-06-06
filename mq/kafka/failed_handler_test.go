@@ -7,15 +7,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestDefaultFailedHandler_WithLogger(t *testing.T) {
+func TestDefaultFailedHandlerFunc_WithLogger(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	handler := newDefaultFailedHandler(logger)
-	handler.Print(context.Background(), "test-group", "test-topic", []byte("msg"), nil)
+	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
+	handler(context.Background(), "test-group", "test-topic", []byte("msg"), nil)
 
 	output := buf.String()
 	if !strings.Contains(output, "test-group") {
@@ -26,55 +27,55 @@ func TestDefaultFailedHandler_WithLogger(t *testing.T) {
 	}
 }
 
-func TestDefaultFailedHandler_NilLogger(t *testing.T) {
-	handler := newDefaultFailedHandler(nil)
+func TestDefaultFailedHandlerFunc_NilLogger(t *testing.T) {
+	handler := DefaultFailedHandlerFunc(nil)
 	// 不应 panic
-	handler.Print(context.Background(), "group", "topic", []byte("msg"), nil)
+	handler(context.Background(), "group", "topic", []byte("msg"), nil)
 }
 
-func TestDefaultFailedHandler_CancelledContext(t *testing.T) {
+func TestDefaultFailedHandlerFunc_CancelledContext(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	handler := newDefaultFailedHandler(logger)
+	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	handler.Print(ctx, "group", "topic", []byte("msg"), nil)
+	handler(ctx, "group", "topic", []byte("msg"), nil)
 	if !strings.Contains(buf.String(), "context") {
 		t.Error("expected log to mention context cancellation")
 	}
 }
 
-func TestDefaultFailedHandler_WithError(t *testing.T) {
+func TestDefaultFailedHandlerFunc_WithError(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	handler := newDefaultFailedHandler(logger)
-	handler.Print(context.Background(), "group", "topic", []byte("msg"), assert.AnError)
+	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
+	handler(context.Background(), "group", "topic", []byte("msg"), assert.AnError)
 
 	output := buf.String()
 	assert.Contains(t, output, "assert") // assert.AnError contains "assert"
 	assert.Contains(t, output, "error")
 }
 
-func TestDefaultFailedHandler_NilError(t *testing.T) {
+func TestDefaultFailedHandlerFunc_NilError(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	handler := newDefaultFailedHandler(logger)
-	handler.Print(context.Background(), "group", "topic", []byte("msg"), nil)
+	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
+	handler(context.Background(), "group", "topic", []byte("msg"), nil)
 
 	output := buf.String()
 	assert.Contains(t, output, "message consume failed")
 }
 
-func TestDefaultFailedHandler_ActiveContext(t *testing.T) {
+func TestDefaultFailedHandlerFunc_ActiveContext(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	handler := newDefaultFailedHandler(logger)
-	handler.Print(context.Background(), "group", "topic", []byte("msg"), nil)
+	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
+	handler(context.Background(), "group", "topic", []byte("msg"), nil)
 
 	output := buf.String()
 	// Active context should NOT mention contextErr

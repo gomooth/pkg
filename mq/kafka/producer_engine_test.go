@@ -8,6 +8,7 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/IBM/sarama/mocks"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 )
 
@@ -21,7 +22,7 @@ func TestProducerEngine_ProduceSuccess(t *testing.T) {
 	engine := &producerEngine{
 		brokers: []string{"localhost:9092"},
 		config:  cfg,
-		metrics: internal.NewProducerMetrics(),
+		metrics: metrics.NewProducerMetrics("kafka"),
 	}
 	engine.mu.Lock()
 	engine.inner = mockProducer
@@ -47,7 +48,7 @@ func TestProducerEngine_ProduceError(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.mu.Lock()
 	engine.inner = mockProducer
@@ -132,7 +133,7 @@ func TestProducerEngine_StartStateTransition(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      internal.BuildProducerConfig(5 * time.Second),
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 
 	// Starting from idle should fail because no broker is available,
@@ -224,7 +225,7 @@ func TestProducerImpl_ProduceBatchEmpty(t *testing.T) {
 	engine := &producerEngine{
 		brokers: []string{"localhost:9092"},
 		config:  internal.BuildProducerConfig(5 * time.Second),
-		metrics: internal.NewProducerMetrics(),
+		metrics: metrics.NewProducerMetrics("kafka"),
 	}
 	engine.state.Store(producerRunning)
 
@@ -238,7 +239,7 @@ func TestProducerImpl_ProduceOrderedEmpty(t *testing.T) {
 	engine := &producerEngine{
 		brokers: []string{"localhost:9092"},
 		config:  internal.BuildProducerConfig(5 * time.Second),
-		metrics: internal.NewProducerMetrics(),
+		metrics: metrics.NewProducerMetrics("kafka"),
 	}
 	engine.state.Store(producerRunning)
 

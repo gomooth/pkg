@@ -11,6 +11,7 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/IBM/sarama/mocks"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,7 +87,7 @@ func TestProducerEngine_ProduceWithMock(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.mu.Lock()
 	engine.inner = mockProducer
@@ -109,7 +110,7 @@ func TestProducerEngine_ProduceBatchWithMock(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.mu.Lock()
 	engine.inner = mockProducer
@@ -132,7 +133,7 @@ func TestProducerEngine_ProduceOrderedWithMock(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.mu.Lock()
 	engine.inner = mockProducer
@@ -154,7 +155,7 @@ func TestProducerEngine_ProduceErrorWithMock(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.mu.Lock()
 	engine.inner = mockProducer
@@ -172,7 +173,7 @@ func TestProducerEngine_ProduceBatchError(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.state.Store(producerRunning)
 
@@ -188,7 +189,7 @@ func TestProducerEngine_ProduceOrderedError(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.state.Store(producerRunning)
 
@@ -206,7 +207,7 @@ func TestProducerEngine_StartAlreadyRunning(t *testing.T) {
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     internal.NewProducerMetrics(),
+		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 	engine.mu.Lock()
 	engine.inner = mockProducer
@@ -301,8 +302,8 @@ func TestProducerEngine_ReconnectLoopContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
+	engine.wg.Add(1)
 	go func() {
-		engine.wg.Add(1)
 		engine.reconnectLoop(ctx)
 		close(done)
 	}()

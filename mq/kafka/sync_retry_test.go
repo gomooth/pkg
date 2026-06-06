@@ -10,7 +10,8 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/kafka/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -255,18 +256,19 @@ func TestSyncRetry_ExhaustedWithLogger(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
 
 	strategy := newSyncRetryStrategy("test-group", handler, 1,
 		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
 		0, logger, nil,
 	)
+	strategy.SetFailedHandler(DefaultFailedHandlerFunc(logger))
 
 	session := newMockSession()
 	msg := &sarama.ConsumerMessage{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello")}
 	strategy.OnMessage(context.Background(), session, msg)
-	// Logger should have logged the error
-	assert.Contains(t, buf.String(), "event handle failed")
+	// failedHandler should have logged the error
+	assert.Contains(t, buf.String(), "message consume failed")
 }
 
 // ==================== handleExhausted 单独测试 ====================
@@ -282,7 +284,7 @@ func TestHandleExhausted_WithDeadLetter_Success(t *testing.T) {
 func TestHandleExhausted_WithDeadLetter_Fail(t *testing.T) {
 	dl := &failingDeadLetterHandler{}
 	var buf bytes.Buffer
-	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
 
 	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
 		dl, nil, logger, nil)
@@ -300,18 +302,19 @@ func TestHandleExhausted_WithFailedHandler(t *testing.T) {
 	assert.True(t, fhCalled)
 }
 
-func TestHandleExhausted_WithLoggerOnly(t *testing.T) {
+func TestHandleExhausted_WithDefaultFailedHandler(t *testing.T) {
 	var buf bytes.Buffer
-	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
 
+	fh := DefaultFailedHandlerFunc(logger)
 	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
-		nil, nil, logger, nil)
+		nil, fh, logger, nil)
 	assert.Equal(t, exhaustedHandled, result)
-	assert.Contains(t, buf.String(), "event handle failed")
+	assert.Contains(t, buf.String(), "message consume failed")
 }
 
 func TestHandleExhausted_WithMetrics(t *testing.T) {
-	metrics := internal.NewConsumerMetrics()
+	metrics := metrics.NewConsumerMetrics("kafka")
 	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
 		nil, nil, nil, metrics)
 	assert.Equal(t, exhaustedHandled, result)

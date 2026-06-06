@@ -9,7 +9,8 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/kafka/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 )
 
 // 编译时接口检查
@@ -51,8 +52,8 @@ type asyncRetryEngine struct {
 	session   sarama.ConsumerGroupSession
 
 	// 依赖
-	logger        internal.Logger
-	metrics       *internal.ConsumerMetrics
+	logger        logutil.Logger
+	metrics       *metrics.ConsumerMetrics
 	failedHandler FailedHandlerFunc
 	deadLetter    DeadLetterHandler
 }
@@ -70,8 +71,8 @@ func newAsyncRetryEngine(
 	backoff retry.BackoffStrategy,
 	handlerTimeout time.Duration,
 	numWorkers int,
-	logger internal.Logger,
-	metrics *internal.ConsumerMetrics,
+	logger logutil.Logger,
+	metrics *metrics.ConsumerMetrics,
 ) *asyncRetryEngine {
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
@@ -100,8 +101,8 @@ func newAsyncRetryEngineWithStore(
 	handlerTimeout time.Duration,
 	numWorkers int,
 	store RetryStore,
-	logger internal.Logger,
-	metrics *internal.ConsumerMetrics,
+	logger logutil.Logger,
+	metrics *metrics.ConsumerMetrics,
 ) *asyncRetryEngine {
 	engine := newAsyncRetryEngine(cg, handler, maxRetry, backoff, handlerTimeout, numWorkers, logger, metrics)
 	engine.store = store

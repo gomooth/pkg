@@ -2,39 +2,33 @@ package kafka
 
 import (
 	"context"
-	"log/slog"
+
+	"github.com/gomooth/pkg/mq/internal/logutil"
 )
 
 // FailedHandlerFunc 失败处理回调函数类型
 type FailedHandlerFunc func(ctx context.Context, consumerGroup string, topic string, message []byte, err error)
 
-// defaultFailedHandler 默认失败处理器
-type defaultFailedHandler struct {
-	logger *slog.Logger
-}
+// DefaultFailedHandlerFunc 创建默认的失败处理回调函数。
+// 记录消息处理失败日志，包含 consumerGroup、topic 和错误信息。
+func DefaultFailedHandlerFunc(logger logutil.Logger) FailedHandlerFunc {
+	return func(ctx context.Context, consumerGroup string, topic string, message []byte, err error) {
+		if logger == nil {
+			return
+		}
+		args := []any{
+			"component", "kafka-consumer",
+			"consumerGroup", consumerGroup,
+			"topic", topic,
+		}
 
-func newDefaultFailedHandler(logger *slog.Logger) *defaultFailedHandler {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &defaultFailedHandler{logger: logger}
-}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			args = append(args, "contextErr", ctxErr.Error())
+		}
+		if err != nil {
+			args = append(args, "error", err.Error())
+		}
 
-// Print 记录消息处理失败日志
-// 修复 P15：移除 ctx!=nil 冗余检查（Go context 永远不为 nil）
-func (h *defaultFailedHandler) Print(ctx context.Context, consumerGroup string, topic string, message []byte, err error) {
-	args := []any{
-		"component", "kafka-consumer",
-		"consumerGroup", consumerGroup,
-		"topic", topic,
+		logger.Error("message consume failed", args...)
 	}
-
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		args = append(args, "contextErr", ctxErr.Error())
-	}
-	if err != nil {
-		args = append(args, "error", err.Error())
-	}
-
-	h.logger.Error("message consume failed", args...)
 }

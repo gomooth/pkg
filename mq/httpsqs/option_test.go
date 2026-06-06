@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/httpsqs/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,8 +38,8 @@ func TestWithPanicHandler(t *testing.T) {
 func TestWithConsumers(t *testing.T) {
 	cfg := &consumerConfig{}
 	regs := []ConsumerRegistration{
-		{Queue: "q1", Handler: FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error { return nil })},
-		{Queue: "q2", Handler: FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error { return nil })},
+		{Queue: "q1", Handler: types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })},
+		{Queue: "q2", Handler: types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })},
 	}
 	WithConsumers(regs...)(cfg)
 	assert.Len(t, cfg.consumers, 2)
@@ -53,30 +54,30 @@ func TestWithConsumerLogger(t *testing.T) {
 
 func TestWithQueueHTTPSQSClient(t *testing.T) {
 	client := &mockGetClient{}
-	cfg := &queueConfig{}
-	WithQueueHTTPSQSClient(client)(cfg)
-	assert.Equal(t, client, cfg.client)
+	cfg := &types.QueueConfig{}
+	types.WithQueueClient(client)(cfg)
+	assert.Equal(t, client, cfg.Client)
 }
 
 func TestWithQueueMaxRetry(t *testing.T) {
-	cfg := &queueConfig{}
-	WithQueueMaxRetry(5)(cfg)
-	assert.NotNil(t, cfg.maxRetry)
-	assert.Equal(t, 5, *cfg.maxRetry)
+	cfg := &types.QueueConfig{}
+	types.WithQueueMaxRetry(5)(cfg)
+	assert.NotNil(t, cfg.MaxRetry)
+	assert.Equal(t, 5, *cfg.MaxRetry)
 }
 
 func TestWithQueueBackoff(t *testing.T) {
 	bo := &retry.FixedDelay{Wait: time.Second}
-	cfg := &queueConfig{}
-	WithQueueBackoff(bo)(cfg)
-	assert.Equal(t, bo, cfg.backoff)
+	cfg := &types.QueueConfig{}
+	types.WithQueueBackoff(bo)(cfg)
+	assert.Equal(t, bo, cfg.Backoff)
 }
 
 func TestWithQueueRetryMode(t *testing.T) {
-	cfg := &queueConfig{}
-	WithQueueRetryMode(RetryModeRequeue)(cfg)
-	assert.NotNil(t, cfg.retryMode)
-	assert.Equal(t, RetryModeRequeue, *cfg.retryMode)
+	cfg := &types.QueueConfig{}
+	types.WithQueueRetryMode(RetryModeRequeue)(cfg)
+	assert.NotNil(t, cfg.RetryMode)
+	assert.Equal(t, RetryModeRequeue, *cfg.RetryMode)
 }
 
 // ==================== Register Tests ====================
@@ -91,7 +92,7 @@ func TestConsumer_RegisterAfterStart(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error { return nil })),
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })),
 		WithEmptyQueueSleep(50*time.Millisecond),
 		WithConsumerLogger(logger),
 	)
@@ -99,9 +100,10 @@ func TestConsumer_RegisterAfterStart(t *testing.T) {
 	err := consumer.Start(context.Background())
 	require.NoError(t, err)
 
-	// Register after start should log error and skip
-	consumer.Register("q2", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error { return nil }))
-	assert.Contains(t, buf.String(), "cannot register after consumer started")
+	// Register after start should return error
+	regErr := consumer.Register("q2", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil }))
+	assert.Error(t, regErr)
+	assert.Contains(t, regErr.Error(), "cannot register after consumer started")
 	assert.Equal(t, uint(1), consumer.Count())
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -114,14 +116,15 @@ func TestConsumer_RegisterBeforeStart(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error { return nil })),
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
 	assert.Equal(t, uint(1), consumer.Count())
 
 	// Register before start should succeed
-	consumer.Register("q2", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error { return nil }))
+	err := consumer.Register("q2", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil }))
+	assert.NoError(t, err)
 	assert.Equal(t, uint(2), consumer.Count())
 }
 
@@ -137,7 +140,8 @@ func TestConsumer_RegisterEmptyQueueName(t *testing.T) {
 	)
 
 	// Register with empty queue name should log error
-	consumer.Register("", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error { return nil }))
+	err := consumer.Register("", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil }))
+	assert.NoError(t, err) // Register returns no error for empty queue name (logs internally)
 	assert.Contains(t, buf.String(), "queue name must not be empty")
 	assert.Equal(t, uint(0), consumer.Count())
 }
@@ -154,7 +158,8 @@ func TestConsumer_RegisterNilHandler(t *testing.T) {
 	)
 
 	// Register with nil handler should log error
-	consumer.Register("q1", nil)
+	err := consumer.Register("q1", nil)
+	assert.NoError(t, err) // Register returns no error for nil handler (logs internally)
 	assert.Contains(t, buf.String(), "handler must not be nil")
 	assert.Equal(t, uint(0), consumer.Count())
 }
@@ -165,22 +170,22 @@ func TestSyncRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 	var dlCalled atomic.Int32
 
 	strategy := newSyncRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		}),
 		0,
 		&retry.FixedDelay{Wait: time.Millisecond},
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
-	dl := httpsqsDeadLetterFunc(func(ctx context.Context, queue string, data string, pos int64, lastErr error) error {
+	dl := types.DeadLetterHandler(httpsqsDeadLetterFunc(func(ctx context.Context, msg types.Message, lastErr error) error {
 		dlCalled.Add(1)
 		return nil
-	})
+	}))
 	strategy.SetDeadLetterHandler(dl)
 
-	err := strategy.OnMessage(context.Background(), "test", "hello", 1)
+	err := strategy.OnMessage(context.Background(), "test", []byte("hello"))
 	assert.NoError(t, err)
 	assert.Equal(t, int32(1), dlCalled.Load())
 }
@@ -191,66 +196,26 @@ func TestRequeueRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 	var dlCalled atomic.Int32
 
 	strategy := newRequeueRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		}),
 		0, // maxRetry=0, immediate exhaustion
 		&retry.FixedDelay{Wait: time.Millisecond},
 		client,
 		"test-queue",
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
-	dl := httpsqsDeadLetterFunc(func(ctx context.Context, queue string, data string, pos int64, lastErr error) error {
+	dl := types.DeadLetterHandler(httpsqsDeadLetterFunc(func(ctx context.Context, msg types.Message, lastErr error) error {
 		dlCalled.Add(1)
 		return nil
-	})
+	}))
 	strategy.SetDeadLetterHandler(dl)
 
-	err := strategy.OnMessage(context.Background(), "test", "hello", 1)
+	err := strategy.OnMessage(context.Background(), "test", []byte("hello"))
 	assert.NoError(t, err)
 	assert.Equal(t, int32(1), dlCalled.Load())
-}
-
-// ==================== handleExhausted with dead letter error ====================
-
-func TestHandleExhausted_DeadLetterError(t *testing.T) {
-	var buf bytes.Buffer
-	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, nil)))
-
-	result := handleExhausted(
-		context.Background(),
-		"test",
-		"hello",
-		1,
-		errors.New("fail"),
-		httpsqsDeadLetterFunc(func(ctx context.Context, queue string, data string, pos int64, lastErr error) error {
-			return errors.New("dead letter handler failed")
-		}),
-		nil,
-		logger,
-		nil,
-	)
-
-	assert.Equal(t, exhaustedContinue, result)
-	assert.Contains(t, buf.String(), "dead letter handler failed")
-}
-
-func TestHandleExhausted_NoHandlerNoLogger(t *testing.T) {
-	result := handleExhausted(
-		context.Background(),
-		"test",
-		"hello",
-		1,
-		errors.New("fail"),
-		nil,
-		nil,
-		nil,
-		nil,
-	)
-
-	assert.Equal(t, exhaustedContinue, result)
 }
 
 // ==================== Consumer with PanicHandler ====================
@@ -266,7 +231,7 @@ func TestConsumer_WithPanicHandler(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("panic-queue", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("panic-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			panic("test panic")
 		})),
 		WithMaxRetry(0),
@@ -309,7 +274,7 @@ func TestConsumer_WithHandlerTimeout(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("timeout-queue", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("timeout-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			consumed.Add(1)
 			time.Sleep(200 * time.Millisecond)
 			return ctx.Err()
@@ -343,9 +308,9 @@ func TestConsumer_WithQueueHTTPSQSClient(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
-		}), WithQueueHTTPSQSClient(client)),
+		}), types.WithQueueClient(client)),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
@@ -359,9 +324,9 @@ func TestConsumer_WithQueueRetryMode(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
-		}), WithQueueRetryMode(RetryModeRequeue)),
+		}), types.WithQueueRetryMode(RetryModeRequeue)),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
@@ -375,9 +340,9 @@ func TestConsumer_WithQueueBackoff(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
-		}), WithQueueBackoff(&retry.FixedDelay{Wait: time.Millisecond})),
+		}), types.WithQueueBackoff(&retry.FixedDelay{Wait: time.Millisecond})),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
@@ -391,12 +356,11 @@ func TestConsumer_WithQueueMaxRetry(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
-		}), WithQueueMaxRetry(5)),
+		}), types.WithQueueMaxRetry(5)),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
 	assert.Equal(t, uint(1), consumer.Count())
 }
-

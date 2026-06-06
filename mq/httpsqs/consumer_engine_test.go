@@ -9,6 +9,7 @@ import (
 
 	"github.com/gomooth/httpsqs"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +65,7 @@ func TestNewConsumer(t *testing.T) {
 	client := &mockGetClient{}
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("test-queue", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("test-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
 	)
@@ -85,7 +86,7 @@ func TestConsumer_StartShutdown(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("test-queue", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("test-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			consumed.Add(1)
 			return nil
 		})),
@@ -114,7 +115,7 @@ func TestConsumer_StartShutdown(t *testing.T) {
 
 func TestConsumer_NoClient(t *testing.T) {
 	consumer := NewConsumer(
-		WithConsumer("test-queue", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("test-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
 	)
@@ -135,7 +136,7 @@ func TestConsumer_DoubleStart(t *testing.T) {
 	client := &mockGetClient{}
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
 		WithEmptyQueueSleep(50*time.Millisecond),
@@ -156,7 +157,7 @@ func TestConsumer_HealthCheck(t *testing.T) {
 	client := &mockGetClient{}
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
 		WithEmptyQueueSleep(50*time.Millisecond),
@@ -192,7 +193,7 @@ func TestConsumer_SyncRetry(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("retry-queue", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("retry-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			n := handleAttempts.Add(1)
 			if n < 3 {
 				return errors.New("fail")
@@ -235,12 +236,12 @@ func TestConsumer_FailedHandler(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("fail-queue", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("fail-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		})),
 		WithMaxRetry(1),
 		WithBackoff(&retry.FixedDelay{Wait: time.Millisecond}),
-		WithFailedHandler(func(ctx context.Context, queue string, data string, pos int64, err error) {
+		WithFailedHandler(func(ctx context.Context, msg types.Message, err error) {
 			failedCalled.Add(1)
 		}),
 		WithEmptyQueueSleep(50*time.Millisecond),
@@ -275,11 +276,11 @@ func TestConsumer_MultipleQueues(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("queue1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("queue1", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			q1Consumed.Add(1)
 			return nil
 		})),
-		WithConsumer("queue2", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("queue2", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			q2Consumed.Add(1)
 			return nil
 		})),
@@ -314,12 +315,12 @@ func TestConsumer_QueueLevelOverride(t *testing.T) {
 
 	consumer := NewConsumer(
 		WithHTTPSQSClient(client),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
-		WithConsumer("q2", FuncHandler(func(ctx context.Context, queue string, data string, pos int64) error {
+		WithConsumer("q2", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
-		}), WithQueueFailedHandler(func(ctx context.Context, queue string, data string, pos int64, err error) {
+		}), types.WithQueueFailedHandler(func(ctx context.Context, msg types.Message, err error) {
 			q2FailedCalled.Add(1)
 		})),
 		WithEmptyQueueSleep(50*time.Millisecond),

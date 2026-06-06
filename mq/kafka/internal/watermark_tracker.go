@@ -5,6 +5,8 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sync"
+
+	"github.com/gomooth/pkg/mq/internal/logutil"
 )
 
 type topicPartition struct {
@@ -33,14 +35,14 @@ type shardData struct {
 // 用于 Plan B：只提交水位线以内的 offset，保证不跳过未处理的消息。
 type WatermarkTracker struct {
 	shards [shardCount]shardData
-	logger Logger // P5 fix: injected Logger instead of hardcoded slog
+	logger logutil.Logger // P5 fix: injected Logger instead of hardcoded slog
 }
 
 // NewWatermarkTracker creates a watermark tracker with injected logger.
 // If logger is nil, a no-op logger is used.
-func NewWatermarkTracker(logger Logger) *WatermarkTracker {
+func NewWatermarkTracker(logger logutil.Logger) *WatermarkTracker {
 	if logger == nil {
-		logger = NewSlogLogger(noopSlogLogger())
+		logger = logutil.NewSlogLogger(noopSlogLogger())
 	}
 	t := &WatermarkTracker{logger: logger}
 	for i := range t.shards {

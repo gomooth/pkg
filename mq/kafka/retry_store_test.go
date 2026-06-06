@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gomooth/pkg/mq/kafka/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -283,7 +283,7 @@ func TestErrRetryQueueFull(t *testing.T) {
 }
 
 func TestWithMemoryLogger(t *testing.T) {
-	logger := internal.NewSlogLogger(newTestSlogLogger())
+	logger := logutil.NewSlogLogger(newTestSlogLogger())
 	store := NewMemoryRetryStore(WithMemoryLogger(logger))
 	require.NotNil(t, store)
 }

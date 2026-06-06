@@ -12,7 +12,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/mq/redis/internal"
+	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -258,7 +258,7 @@ func TestSyncRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 		}),
 		0,
 		&retry.FixedDelay{Wait: time.Millisecond},
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
@@ -290,7 +290,7 @@ func TestRequeueRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 		&retry.FixedDelay{Wait: time.Millisecond},
 		client,
 		"queue:",
-		internal.NewSlogLogger(nilLogger()),
+		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
 
@@ -310,7 +310,7 @@ func TestRequeueRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 
 func TestHandleExhausted_DeadLetterError(t *testing.T) {
 	var buf bytes.Buffer
-	logger := internal.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, nil)))
 
 	result := handleExhausted(
 		context.Background(),

@@ -1,4 +1,4 @@
-package internal
+package metrics
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-const meterName = "github.com/gomooth/pkg/mq/httpsqs"
-
 // ConsumerMetrics 消费者指标收集器
 type ConsumerMetrics struct {
 	consumeCounter    metric.Int64Counter
@@ -16,12 +14,14 @@ type ConsumerMetrics struct {
 	deadLetterCounter metric.Int64Counter
 }
 
-// NewConsumerMetrics 创建消费者指标收集器
-func NewConsumerMetrics() *ConsumerMetrics {
-	m := telemetry.Meter(meterName)
-	consumeCounter, _ := m.Int64Counter("httpsqs.consumer.messages", metric.WithDescription("Messages consumed successfully"))
-	retryCounter, _ := m.Int64Counter("httpsqs.consumer.retries", metric.WithDescription("Message retry attempts"))
-	deadLetterCounter, _ := m.Int64Counter("httpsqs.consumer.dead_letters", metric.WithDescription("Messages sent to dead letter"))
+// NewConsumerMetrics 创建消费者指标收集器。
+// prefix 用于区分不同 MQ 实现（如 "kafka"、"redis"、"httpsqs"），
+// 会同时作为 meter 名称和指标名的前缀。
+func NewConsumerMetrics(prefix string) *ConsumerMetrics {
+	m := telemetry.Meter("github.com/gomooth/pkg/mq/" + prefix)
+	consumeCounter, _ := m.Int64Counter(prefix+".consumer.messages", metric.WithDescription("Messages consumed successfully"))
+	retryCounter, _ := m.Int64Counter(prefix+".consumer.retries", metric.WithDescription("Message retry attempts"))
+	deadLetterCounter, _ := m.Int64Counter(prefix+".consumer.dead_letters", metric.WithDescription("Messages sent to dead letter"))
 	return &ConsumerMetrics{
 		consumeCounter:    consumeCounter,
 		retryCounter:      retryCounter,

@@ -12,7 +12,9 @@ import (
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/pkg/framework/xcode"
-	"github.com/gomooth/pkg/mq/queue"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/traceutil"
 	"github.com/gomooth/pkg/mq/redis/internal"
 	"github.com/gomooth/xerror"
 	"github.com/redis/go-redis/v9"
@@ -51,7 +53,7 @@ type consumerEngine struct {
 	wg         sync.WaitGroup
 
 	logger  *slog.Logger
-	metrics *internal.ConsumerMetrics
+	metrics *metrics.ConsumerMetrics
 }
 
 // 编译时接口检查
@@ -63,7 +65,7 @@ func newConsumerEngine(addr string, cfg *consumerConfig) *consumerEngine {
 		logger = slog.Default()
 	}
 
-	metrics := internal.NewConsumerMetrics()
+	metrics := metrics.NewConsumerMetrics("redis")
 
 	engine := &consumerEngine{
 		addr:    addr,
@@ -124,12 +126,18 @@ func (e *consumerEngine) createRegistration(queueName string, handler IHandler) 
 		backoff = &retry.ExponentialDelay{Base: time.Second, Max: 5 * time.Minute}
 	}
 
-	intLogger := internal.NewSlogLogger(e.logger)
+	intLogger := logutil.NewSlogLogger(e.logger)
+
+	// 注入默认 failedHandler（若用户未设置）
+	failedHandler := e.opt.failedHandler
+	if failedHandler == nil {
+		failedHandler = DefaultFailedHandlerFunc(intLogger)
+	}
 
 	switch e.opt.retryMode {
 	case RetryModeRequeue:
 		s := newRequeueRetryStrategy(handler, e.opt.maxRetry, backoff, client, e.opt.queuePrefix, intLogger, e.metrics)
-		s.SetFailedHandler(e.opt.failedHandler)
+		s.SetFailedHandler(failedHandler)
 		if dl, ok := handler.(DeadLetterHandler); ok {
 			s.SetDeadLetterHandler(dl)
 		}
@@ -137,7 +145,7 @@ func (e *consumerEngine) createRegistration(queueName string, handler IHandler) 
 		strategy = s
 	default: // RetryModeSync
 		s := newSyncRetryStrategy(handler, e.opt.maxRetry, backoff, intLogger, e.metrics)
-		s.SetFailedHandler(e.opt.failedHandler)
+		s.SetFailedHandler(failedHandler)
 		if dl, ok := handler.(DeadLetterHandler); ok {
 			s.SetDeadLetterHandler(dl)
 		}
@@ -218,6 +226,10 @@ func (e *consumerEngine) Shutdown(ctx context.Context) error {
 	for _, reg := range regs {
 		if reg.client != nil {
 			_ = reg.client.Close()
+		}
+		// 关闭 requeueRetryStrategy 的 AttemptTracker
+		if closer, ok := reg.strategy.(interface{ Close() }); ok {
+			closer.Close()
 		}
 	}
 
@@ -311,7 +323,7 @@ func (e *consumerEngine) consumeLoop(ctx context.Context, qc queueConsumer) {
 		attempt = 0
 
 		// Extract trace context
-		msgCtx := queue.ExtractTraceContext(ctx, result)
+		msgCtx := traceutil.ExtractTraceContext(ctx, result)
 
 		// Create consumer Span
 		tracer := telemetry.Tracer("mq.redis.consumer")

@@ -9,7 +9,8 @@ import (
 
 	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/pkg/framework/xcode"
-	mqqueue "github.com/gomooth/pkg/mq/queue"
+	"github.com/gomooth/pkg/mq/internal/metrics"
+	mqtraceutil "github.com/gomooth/pkg/mq/internal/traceutil"
 	"github.com/gomooth/pkg/mq/redis/internal"
 	"github.com/gomooth/xerror"
 	"github.com/redis/go-redis/v9"
@@ -35,7 +36,7 @@ type producerEngine struct {
 	client redis.UniversalClient
 
 	logger  *slog.Logger
-	metrics *internal.ProducerMetrics
+	metrics *metrics.ProducerMetrics
 }
 
 func newProducerEngine(addr string, cfg *producerConfig) *producerEngine {
@@ -48,7 +49,7 @@ func newProducerEngine(addr string, cfg *producerConfig) *producerEngine {
 		addr:    addr,
 		opt:     cfg,
 		logger:  logger,
-		metrics: internal.NewProducerMetrics(),
+		metrics: metrics.NewProducerMetrics("redis"),
 	}
 }
 
@@ -115,7 +116,7 @@ func (e *producerEngine) Produce(ctx context.Context, queue string, message []by
 	defer span.End()
 
 	// Inject trace context into message
-	injectedMsg := mqqueue.InjectTraceContext(ctx, string(message))
+	injectedMsg := mqtraceutil.InjectTraceContext(ctx, string(message))
 
 	e.mu.RLock()
 	client := e.client
@@ -180,7 +181,7 @@ func (e *producerEngine) ProduceBatch(ctx context.Context, queue string, message
 	// 使用 Pipeline 批量推送，注入 trace context
 	pipe := client.Pipeline()
 	for _, msg := range messages {
-		injectedMsg := mqqueue.InjectTraceContext(ctx, string(msg))
+		injectedMsg := mqtraceutil.InjectTraceContext(ctx, string(msg))
 		pipe.LPush(ctx, queueKey, []byte(injectedMsg))
 	}
 	if _, err := pipe.Exec(ctx); err != nil {

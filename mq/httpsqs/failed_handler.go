@@ -2,35 +2,35 @@ package httpsqs
 
 import (
 	"context"
-	"log/slog"
+
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
-// defaultFailedHandler 默认失败处理器
-type defaultFailedHandler struct {
-	logger *slog.Logger
-}
+// DefaultFailedHandlerFunc 创建默认的失败处理回调函数。
+// 记录消息处理失败日志，包含 queue、pos 和错误信息。
+func DefaultFailedHandlerFunc(logger logutil.Logger) types.FailedHandlerFunc {
+	return func(ctx context.Context, msg types.Message, err error) {
+		if logger == nil {
+			return
+		}
+		args := []any{
+			"component", "httpsqs-consumer",
+			"queue", msg.Queue,
+		}
 
-func newDefaultFailedHandler(logger *slog.Logger) *defaultFailedHandler {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &defaultFailedHandler{logger: logger}
-}
+		pos, _ := msg.HttpsqSPosition()
+		if pos > 0 {
+			args = append(args, "pos", pos)
+		}
 
-// Print 记录消息处理失败日志
-func (h *defaultFailedHandler) Print(ctx context.Context, queue string, data string, pos int64, err error) {
-	args := []any{
-		"component", "httpsqs-consumer",
-		"queue", queue,
-		"pos", pos,
-	}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			args = append(args, "contextErr", ctxErr.Error())
+		}
+		if err != nil {
+			args = append(args, "error", err.Error())
+		}
 
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		args = append(args, "contextErr", ctxErr.Error())
+		logger.Error("message consume failed", args...)
 	}
-	if err != nil {
-		args = append(args, "error", err.Error())
-	}
-
-	h.logger.Error("message consume failed", args...)
 }

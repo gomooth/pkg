@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 )
 
@@ -27,7 +28,7 @@ type MemoryStoreOption func(*memoryStoreConfig)
 
 type memoryStoreConfig struct {
 	maxQueueSize int
-	logger       internal.Logger
+	logger       logutil.Logger
 }
 
 // WithMemoryMaxQueueSize 设置最大队列容量（默认 10000）
@@ -38,7 +39,7 @@ func WithMemoryMaxQueueSize(n int) MemoryStoreOption {
 }
 
 // WithMemoryLogger 设置自定义日志器
-func WithMemoryLogger(logger internal.Logger) MemoryStoreOption {
+func WithMemoryLogger(logger logutil.Logger) MemoryStoreOption {
 	return func(c *memoryStoreConfig) {
 		c.logger = logger
 	}
@@ -51,14 +52,14 @@ type MemoryRetryStore struct {
 	pq      *internal.RetryHeap
 	pqMu    sync.Mutex
 	notify  chan struct{}
-	logger  internal.Logger
+	logger  logutil.Logger
 }
 
 // NewMemoryRetryStore 创建内存重试存储实例
 func NewMemoryRetryStore(opts ...MemoryStoreOption) *MemoryRetryStore {
 	cfg := memoryStoreConfig{
 		maxQueueSize: 10000,
-		logger:       internal.NewSlogLogger(slog.Default()),
+		logger:       logutil.NewSlogLogger(slog.Default()),
 	}
 	for _, opt := range opts {
 		opt(&cfg)

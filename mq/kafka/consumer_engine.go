@@ -12,6 +12,7 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/pkg/mq/internal/metrics"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 	"github.com/gomooth/xerror"
 )
@@ -46,7 +47,7 @@ type consumerEngine struct {
 	wg         sync.WaitGroup
 
 	logger  *slog.Logger
-	metrics *internal.ConsumerMetrics
+	metrics *metrics.ConsumerMetrics
 }
 
 // 编译时接口检查
@@ -70,7 +71,7 @@ func newConsumerEngine(brokers []string, cfg *consumerConfig) *consumerEngine {
 		saramaConfig = internal.BuildConsumerConfig(timeout)
 	}
 
-	metrics := internal.NewConsumerMetrics()
+	metrics := metrics.NewConsumerMetrics("kafka")
 
 	engine := &consumerEngine{
 		brokers: brokers,

@@ -62,5 +62,3 @@ const (
 
 // ==================== 失败处理器 ====================
 
-// FailedHandlerFunc 消费失败处理器（重试耗尽后调用）
-type FailedHandlerFunc func(ctx context.Context, queue string, message []byte, err error)

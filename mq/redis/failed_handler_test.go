@@ -7,15 +7,16 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestDefaultFailedHandler_Print(t *testing.T) {
+func TestDefaultFailedHandlerFunc_WithLogger(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	handler := newDefaultFailedHandler(logger)
+	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
 
-	handler.Print(context.Background(), "test-queue", []byte("hello"), errors.New("handle failed"))
+	handler(context.Background(), "test-queue", []byte("hello"), errors.New("handle failed"))
 
 	output := buf.String()
 	assert.Contains(t, output, "message consume failed")
@@ -24,25 +25,24 @@ func TestDefaultFailedHandler_Print(t *testing.T) {
 	assert.Contains(t, output, "handle failed")
 }
 
-func TestDefaultFailedHandler_Print_WithContextError(t *testing.T) {
+func TestDefaultFailedHandlerFunc_WithContextError(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	handler := newDefaultFailedHandler(logger)
+	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	handler.Print(ctx, "test-queue", []byte("hello"), errors.New("handle failed"))
+	handler(ctx, "test-queue", []byte("hello"), errors.New("handle failed"))
 
 	output := buf.String()
 	assert.Contains(t, output, "context canceled")
 }
 
-func TestDefaultFailedHandler_NilLogger(t *testing.T) {
-	handler := newDefaultFailedHandler(nil)
-	assert.NotNil(t, handler)
+func TestDefaultFailedHandlerFunc_NilLogger(t *testing.T) {
+	handler := DefaultFailedHandlerFunc(nil)
 	// 不应 panic
-	handler.Print(context.Background(), "q", []byte("m"), errors.New("e"))
+	handler(context.Background(), "q", []byte("m"), errors.New("e"))
 }
 
 func TestFailedHandlerFunc(t *testing.T) {
