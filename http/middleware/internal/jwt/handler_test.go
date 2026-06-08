@@ -210,14 +210,16 @@ func TestHandler_Handle_NonStatefulTokenOnStatefulHandler(t *testing.T) {
 }
 
 // mockStatefulStore is a mock implementation of StatefulStore for testing
-type mockStatefulStore struct{}
+type mockStatefulStore struct {
+	checkErr error // 可选：Check 返回的错误
+}
 
 func (m *mockStatefulStore) Save(_ context.Context, _ uint, _ string, _ int64) error {
 	return nil
 }
 
 func (m *mockStatefulStore) Check(_ context.Context, _ uint, _ string) error {
-	return nil
+	return m.checkErr
 }
 
 func (m *mockStatefulStore) Remove(_ context.Context, _ uint, _ string) error {

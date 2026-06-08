@@ -242,3 +242,34 @@ func TestRetryModeConstants(t *testing.T) {
 	assert.Equal(t, RetryMode(0), RetryModeSync)
 	assert.Equal(t, RetryMode(1), RetryModeRequeue)
 }
+
+// --- SetStrictMode ---
+
+func TestSetStrictMode_EnableAndDisable(t *testing.T) {
+	// 确认默认关闭
+	assert.False(t, strictMode)
+
+	// 启用严格模式
+	SetStrictMode(true)
+	assert.True(t, strictMode)
+
+	// 在严格模式下 Validate 执行检查
+	msg := NewRedisMessage("q", nil)
+	msg.Group = "bad"
+	assert.Error(t, msg.Validate())
+
+	// 禁用严格模式
+	SetStrictMode(false)
+	assert.False(t, strictMode)
+
+	// 禁用后 Validate 返回 nil
+	assert.NoError(t, msg.Validate())
+}
+
+// --- mqSystem.String default 分支 ---
+
+func TestMqSystem_String_Unknown(t *testing.T) {
+	// 覆盖 default 分支：未知系统类型返回 "unknown"
+	unknown := mqSystem(99)
+	assert.Equal(t, "unknown", unknown.String())
+}

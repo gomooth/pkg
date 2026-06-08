@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,4 +55,34 @@ func TestBase_SafeGo_NoPanic(t *testing.T) {
 		executed.Store(true)
 	}, nil)
 	assert.Eventually(t, func() bool { return executed.Load() }, time.Second, 10*time.Millisecond)
+}
+
+// TestBase_SafeGo_PanicWithBasePanicHandler 测试 panicHandler 为 nil 时回退到 Base.PanicHandler
+func TestBase_SafeGo_PanicWithBasePanicHandler(t *testing.T) {
+	var panicked atomic.Bool
+	b := &Base{
+		PanicHandler: func(r any) {
+			panicked.Store(true)
+		},
+	}
+	b.SafeGo("test", func() {
+		panic("boom")
+	}, nil) // panicHandler 为 nil，应回退到 b.PanicHandler
+	assert.Eventually(t, func() bool { return panicked.Load() }, time.Second, 10*time.Millisecond)
+}
+
+// TestBase_SafeGo_PanicWithLogger 测试 Logger 不为 nil 时记录日志
+func TestBase_SafeGo_PanicWithLogger(t *testing.T) {
+	var buf bytes.Buffer
+	b := &Base{
+		Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+	}
+	var panicked atomic.Bool
+	b.SafeGo("test", func() {
+		panic("boom")
+	}, func(r any) {
+		panicked.Store(true)
+	})
+	assert.Eventually(t, func() bool { return panicked.Load() }, time.Second, 10*time.Millisecond)
+	assert.Contains(t, buf.String(), "goroutine panic recovered")
 }

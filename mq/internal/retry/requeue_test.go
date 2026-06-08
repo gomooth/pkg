@@ -212,3 +212,117 @@ func TestRequeueStrategy_DeadLetterOnExhausted(t *testing.T) {
 	}
 	assert.True(t, dl.called, "DeadLetterHandler should be called on exhaustion")
 }
+
+// TestRequeueStrategy_SetFailedHandler 验证通过 SetFailedHandler 设置的回调在重试耗尽时被调用
+func TestRequeueStrategy_SetFailedHandler(t *testing.T) {
+	tracker := attempt_tracker.NewAttemptTracker(
+		attempt_tracker.WithMaxAge(time.Minute),
+		attempt_tracker.WithCleanInterval(time.Hour),
+	)
+	defer tracker.Close()
+
+	var failedCalled bool
+	failedFn := func(_ context.Context, _ types.Message, _ error) {
+		failedCalled = true
+	}
+
+	s := NewRequeueStrategy(RequeueConfig{
+		MaxRetry: 2,
+		Tracker:  tracker,
+		Requeue:  func(_ context.Context, _ types.Message) error { return nil },
+	})
+	s.SetFailedHandler(failedFn)
+
+	msg := types.NewRedisMessage("q", []byte("data"))
+	handleErr := errors.New("fail")
+
+	// 耗尽重试次数
+	for i := 0; i < 3; i++ {
+		_ = s.OnMessage(context.Background(), msg, func(_ context.Context, _ types.Message) error {
+			return handleErr
+		})
+	}
+	assert.True(t, failedCalled, "SetFailedHandler 设置的回调应被调用")
+}
+
+// TestRequeueStrategy_SetDeadLetterHandler 验证死信处理器优先于 FailedHandler
+func TestRequeueStrategy_SetDeadLetterHandler(t *testing.T) {
+	tracker := attempt_tracker.NewAttemptTracker(
+		attempt_tracker.WithMaxAge(time.Minute),
+		attempt_tracker.WithCleanInterval(time.Hour),
+	)
+	defer tracker.Close()
+
+	dl := &mockDeadLetterHandler{}
+	var failedCalled bool
+	failedFn := func(_ context.Context, _ types.Message, _ error) {
+		failedCalled = true
+	}
+
+	s := NewRequeueStrategy(RequeueConfig{
+		MaxRetry: 1,
+		Tracker:  tracker,
+		Requeue:  func(_ context.Context, _ types.Message) error { return nil },
+	})
+	s.SetDeadLetterHandler(dl)
+	s.SetFailedHandler(failedFn)
+
+	msg := types.NewRedisMessage("q", []byte("data"))
+	handleErr := errors.New("fail")
+
+	// 耗尽重试次数
+	for i := 0; i < 2; i++ {
+		_ = s.OnMessage(context.Background(), msg, func(_ context.Context, _ types.Message) error {
+			return handleErr
+		})
+	}
+	assert.True(t, dl.called, "SetDeadLetterHandler 设置的处理器应被调用")
+	assert.False(t, failedCalled, "死信处理器应优先于 FailedHandler")
+}
+
+// TestRequeueStrategy_SetTimeout 验证超时生效，处理函数超过超时时间后返回 context.DeadlineExceeded
+func TestRequeueStrategy_SetTimeout(t *testing.T) {
+	tracker := attempt_tracker.NewAttemptTracker(
+		attempt_tracker.WithMaxAge(time.Minute),
+		attempt_tracker.WithCleanInterval(time.Hour),
+	)
+	defer tracker.Close()
+
+	s := NewRequeueStrategy(RequeueConfig{
+		MaxRetry: 0,
+		Tracker:  tracker,
+	})
+	s.SetTimeout(10 * time.Millisecond)
+
+	msg := types.NewRedisMessage("q", []byte("data"))
+	_ = s.OnMessage(context.Background(), msg, func(ctx context.Context, _ types.Message) error {
+		// 模拟耗时处理，超过超时时间
+		select {
+		case <-time.After(5 * time.Second):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	// RequeueStrategy 返回 nil（始终不返回错误），但超时应使 handler 收到 context.DeadlineExceeded
+	// 验证方式：无 tracker 且 MaxRetry=0 时直接走 HandleExhausted
+	s2 := NewRequeueStrategy(RequeueConfig{
+		MaxRetry: 0,
+	})
+	s2.SetTimeout(10 * time.Millisecond)
+
+	var failedErr error
+	s2.SetFailedHandler(func(_ context.Context, _ types.Message, err error) {
+		failedErr = err
+	})
+
+	_ = s2.OnMessage(context.Background(), msg, func(ctx context.Context, _ types.Message) error {
+		select {
+		case <-time.After(5 * time.Second):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	assert.True(t, errors.Is(failedErr, context.DeadlineExceeded), "SetTimeout 设置的超时应生效")
+}
