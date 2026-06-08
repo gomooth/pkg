@@ -40,6 +40,8 @@ type multiRedisStore struct {
 	hashFunc jwt.HashFunc
 }
 
+var _ jwt.StatefulStore = (*multiRedisStore)(nil)
+
 // NewMultiRedisStore 有状态 token 存储
 func NewMultiRedisStore(client *redis.Client, opts ...func(*multiRedisStore)) jwt.StatefulStore {
 	s := &multiRedisStore{

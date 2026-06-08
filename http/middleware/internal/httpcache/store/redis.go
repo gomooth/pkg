@@ -14,6 +14,8 @@ type RedisStore struct {
 	ownClient   bool // 是否由 store 内部创建的 client（需负责关闭）
 }
 
+var _ ICacheStore = (*RedisStore)(nil)
+
 // NewRedisStore create a redis memory store with redis client
 // 调用方负责关闭 redis.Client。若需要 store 自行管理生命周期，使用 NewOwnedRedisStore。
 func NewRedisStore(redisClient *redis.Client) *RedisStore {

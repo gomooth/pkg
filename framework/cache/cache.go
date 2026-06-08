@@ -99,6 +99,8 @@ type anyCache[T any] struct {
 	renewThreshold float64
 }
 
+var _ ICache[any] = (*anyCache[any])(nil)
+
 // New 创建缓存实例，nameSpace 为命名空间用于 key 前缀隔离，cacheManager 为底层 gocache 管理器
 func New[T any](nameSpace string, cacheManager *cache.Cache[T], opts ...Option[T]) ICache[T] {
 	c := &anyCache[T]{

@@ -43,6 +43,8 @@ type response struct {
 	strictHeaders bool // 严格头部模式：仅允许 X- 前缀的自定义头，默认 true
 }
 
+var _ IResponse = (*response)(nil)
+
 // NewResponse 创建 Restful 标准响应生成器
 //
 // usage:
@@ -58,7 +60,7 @@ type response struct {
 func NewResponse(ctx *gin.Context, opts ...func(*response)) IResponse {
 	resp := &response{
 		ctx:               ctx,
-		visibleErrorCodes: make([]int, 0),
+		visibleErrorCodes: nil, // nil = 所有错误码均可见
 		strictHeaders:     true,
 	}
 

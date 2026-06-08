@@ -26,6 +26,7 @@ func NewOption(secret []byte, roleConvert httpcontext.ToRole, opts ...func(*Opti
 	o := &Option{
 		secret:      secret,
 		roleConvert: roleConvert,
+		leeway:      30 * time.Second, // 默认 30 秒容差，防止分布式环境时钟偏移导致验证失败
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -57,7 +58,7 @@ func WithAllowQueryStringToken(enabled bool, paths ...string) func(*Option) {
 	}
 }
 
-// WithLeeway 为 JWT 时间比较留出容差。默认 0（无容差）。推荐分布式环境设置 30s。
+// WithLeeway 为 JWT 时间比较留出容差。默认 30s（推荐分布式环境设置 ≥30s）。
 func WithLeeway(d time.Duration) func(*Option) {
 	return func(o *Option) {
 		o.leeway = d

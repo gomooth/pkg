@@ -22,6 +22,8 @@ type manager struct {
 	startupTimeout  time.Duration
 }
 
+var _ IManager = (*manager)(nil)
+
 // NewManager 创建 APP 管理器
 func NewManager(opts ...func(*manager)) IManager {
 	m := &manager{

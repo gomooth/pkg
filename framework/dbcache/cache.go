@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"time"
 	"unsafe"
@@ -24,6 +23,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/singleflight"
 )
+
+// 编译时接口检查
+var _ IDBCache[struct{}, struct{}] = (*dbCache[struct{}, struct{}])(nil)
 
 type dbCache[E, F any] struct {
 	cacheManager   *cache.Cache[string]
@@ -73,13 +75,6 @@ func recordDBCacheDuration(ctx context.Context, namespace, operation string, dur
 		attribute.String("result", result),
 	)
 	dbCacheOperationDuration.Record(ctx, dur.Seconds(), attrs)
-}
-
-// hashKey 使用 FNV-1a 128位哈希生成缓存键，比 MD5 更快且足够用于非密码学场景
-func hashKey(s string) string {
-	h := fnv.New128a()
-	h.Write([]byte(s))
-	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // New 创建数据库缓存实例。
@@ -159,7 +154,7 @@ func (s *dbCache[E, F]) Paginate(ctx context.Context, q dbquery.IQuery[F],
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "paginate", time.Since(start), err)
 	}()
-	k := hashKey(q.String())
+	k := dbquery.HashKey(q.String())
 	offset, limit, _ := dbquery.PaginateValues(q)
 	key := dbquery.FormatPaginateKey(s.name, offset, limit, k)
 	tags := []string{s.tag("paginate")}
@@ -189,7 +184,7 @@ func (s *dbCache[E, F]) List(ctx context.Context, q dbquery.IQuery[F],
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "list", time.Since(start), err)
 	}()
-	k := hashKey(q.String())
+	k := dbquery.HashKey(q.String())
 	key := dbquery.FormatListKey(s.name, k)
 	tags := []string{s.tag("list")}
 
@@ -318,7 +313,6 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 	if s.cacheManager == nil {
 		return nil, xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "dbcache: manager not initialized")
 	}
-
 	if err := ctx.Err(); err != nil {
 		return nil, xerror.WrapWithXCode(err, pkgxcode.ErrCacheReadFailed)
 	}
@@ -326,33 +320,7 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 	cachedTags := append([]string{"dbcache", s.ownTag()}, tags...)
 	cacheData, d, err := s.cacheManager.GetWithTTL(ctx, key)
 	if err == nil {
-		dbCacheHitCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name)))
-
-		// auto-renew 使用全局 expiration 重置 TTL，而非保留剩余 TTL。
-		// 这确保续期后的缓存拥有完整的过期窗口，而非逐渐缩短。
-		// 当前 API 所有缓存键统一使用 s.expiration，如需按 key 自定义 TTL，
-		// 需扩展 IDBCache 接口。
-		// 使用 renewSingle 去重，避免多个 goroutine 同时续期同一 key 造成写入风暴
-		if s.autoRenew && d <= time.Duration(float64(s.expiration)*s.renewThreshold) {
-			if _, err, _ := s.renewSingle.Do(key, func() (any, error) {
-				if err := s.cacheManager.Set(
-					ctx, key, cacheData,
-					store.WithExpiration(s.expiration),
-					store.WithTags(cachedTags),
-				); err != nil {
-					slog.Warn("dbcache: auto-renew set failed", slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
-					return nil, err
-				}
-				dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success")))
-				return nil, nil
-			}); err != nil {
-				// 续期失败不影响本次读取，仅记录日志
-				slog.Warn("dbcache: auto-renew failed", slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
-				dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
-			}
-		}
-
-		return []byte(cacheData), nil
+		return s.handleCacheHit(ctx, key, cacheData, d, cachedTags)
 	}
 
 	// Graceful degradation: 任何 Get 错误都视为缓存未命中，继续查 DB
@@ -361,7 +329,46 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 		slog.Debug("dbcache: cache miss with unexpected error, falling back to query",
 			slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
 	}
+	return s.handleCacheMiss(ctx, key, cachedTags, fun)
+}
 
+// handleCacheHit 处理缓存命中：记录指标 + 判断是否需要自动续期
+func (s *dbCache[E, F]) handleCacheHit(ctx context.Context, key, cacheData string, ttl time.Duration, cachedTags []string) ([]byte, error) {
+	dbCacheHitCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name)))
+
+	// auto-renew 使用全局 expiration 重置 TTL，而非保留剩余 TTL。
+	// 这确保续期后的缓存拥有完整的过期窗口，而非逐渐缩短。
+	// 当前 API 所有缓存键统一使用 s.expiration，如需按 key 自定义 TTL，
+	// 需扩展 IDBCache 接口。
+	if s.autoRenew && ttl <= time.Duration(float64(s.expiration)*s.renewThreshold) {
+		s.tryRenew(ctx, key, cacheData, cachedTags)
+	}
+
+	return []byte(cacheData), nil
+}
+
+// tryRenew 自动续期缓存，使用 singleflight 去重防止并发续期风暴
+func (s *dbCache[E, F]) tryRenew(ctx context.Context, key, cacheData string, cachedTags []string) {
+	if _, err, _ := s.renewSingle.Do(key, func() (any, error) {
+		if err := s.cacheManager.Set(
+			ctx, key, cacheData,
+			store.WithExpiration(s.expiration),
+			store.WithTags(cachedTags),
+		); err != nil {
+			slog.Warn("dbcache: auto-renew set failed", slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
+			return nil, err
+		}
+		dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success")))
+		return nil, nil
+	}); err != nil {
+		// 续期失败不影响本次读取，仅记录日志
+		slog.Warn("dbcache: auto-renew failed", slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
+		dbCacheRenewCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
+	}
+}
+
+// handleCacheMiss 处理缓存未命中：检查错误缓存后，走 singleflight 查询并写入缓存
+func (s *dbCache[E, F]) handleCacheMiss(ctx context.Context, key string, cachedTags []string, fun func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	dbCacheMissCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name)))
 
 	// 检查是否有错误占位值（独立键存储，与正常数据完全隔离）
@@ -373,40 +380,18 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 		}
 	}
 
+	return s.queryAndCache(ctx, key, cachedTags, fun)
+}
+
+// queryAndCache singleflight 去重查询 + 缓存写入
+func (s *dbCache[E, F]) queryAndCache(ctx context.Context, key string, cachedTags []string, fun func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	v, err, _ := s.single.Do(key, func() (any, error) {
 		result, err := fun(ctx)
 		if err != nil {
-			// 错误结果短暂缓存到独立键：防止相同 key 的错误请求反复打到数据库
-			if s.errorCacheTTL > 0 {
-				errKey := key + errorCacheKeySuffix
-				if setErr := s.cacheManager.Set(
-					ctx, errKey, err.Error(),
-					store.WithExpiration(s.errorCacheTTL),
-					store.WithTags(cachedTags),
-				); setErr != nil {
-					slog.Debug("dbcache: error cache set failed", slog.String("component", "dbcache"), slog.String("key", errKey), slog.String("error", setErr.Error()))
-				} else {
-					dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success"), attribute.String("type", "error_cache")))
-				}
-			}
+			s.cacheError(ctx, key, cachedTags, err)
 			return nil, err
 		}
-
-		// 使用 unsafe.String 零拷贝转换 []byte→string，避免每次缓存写入的完整拷贝。
-		// 安全性：result 是 fun(ctx) 的返回值，Set 调用后 []byte 不再被修改。
-		// gocache 内部将 string 存入 Redis/memstore，不持有原始 []byte 引用。
-		if err := s.cacheManager.Set(
-			ctx, key, unsafe.String(unsafe.SliceData(result), len(result)),
-			store.WithExpiration(s.expiration),
-			store.WithTags(cachedTags),
-		); err != nil {
-			slog.Error("dbcache: cache set failed, degrading to direct result",
-				slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
-			dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
-		} else {
-			dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success")))
-		}
-
+		s.cacheResult(ctx, key, cachedTags, result)
 		return result, nil
 	})
 	if err != nil {
@@ -418,6 +403,41 @@ func (s *dbCache[E, F]) remember(ctx context.Context, key string, tags []string,
 		return nil, xerror.NewXCode(pkgxcode.ErrCacheReadFailed, "cache store result type assertion failed")
 	}
 	return result, nil
+}
+
+// cacheError 将错误结果缓存到独立键，防止相同 key 的错误请求反复打到数据库
+func (s *dbCache[E, F]) cacheError(ctx context.Context, key string, cachedTags []string, err error) {
+	if s.errorCacheTTL <= 0 {
+		return
+	}
+	errKey := key + errorCacheKeySuffix
+	if setErr := s.cacheManager.Set(
+		ctx, errKey, err.Error(),
+		store.WithExpiration(s.errorCacheTTL),
+		store.WithTags(cachedTags),
+	); setErr != nil {
+		slog.Debug("dbcache: error cache set failed", slog.String("component", "dbcache"), slog.String("key", errKey), slog.String("error", setErr.Error()))
+	} else {
+		dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success"), attribute.String("type", "error_cache")))
+	}
+}
+
+// cacheResult 将正常结果写入缓存，使用 unsafe.String 零拷贝转换 []byte→string
+func (s *dbCache[E, F]) cacheResult(ctx context.Context, key string, cachedTags []string, result []byte) {
+	// 使用 unsafe.String 零拷贝转换 []byte→string，避免每次缓存写入的完整拷贝。
+	// 安全性：result 是 fun(ctx) 的返回值，Set 调用后 []byte 不再被修改。
+	// gocache 内部将 string 存入 Redis/memstore，不持有原始 []byte 引用。
+	if err := s.cacheManager.Set(
+		ctx, key, unsafe.String(unsafe.SliceData(result), len(result)),
+		store.WithExpiration(s.expiration),
+		store.WithTags(cachedTags),
+	); err != nil {
+		slog.Error("dbcache: cache set failed, degrading to direct result",
+			slog.String("component", "dbcache"), slog.String("key", key), slog.String("error", err.Error()))
+		dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "failure")))
+	} else {
+		dbCacheWriteCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("namespace", s.name), attribute.String("result", "success")))
+	}
 }
 
 func (s *dbCache[E, F]) ownTag() string {

@@ -17,6 +17,8 @@ type singleRedisStore struct {
 	hashFunc jwt.HashFunc
 }
 
+var _ jwt.StatefulStore = (*singleRedisStore)(nil)
+
 // NewSingleRedisStore 单客户端有状态 token 存储
 // 一个用户只能登录一个客户端，旧的客户端会被踢掉
 func NewSingleRedisStore(client *redis.Client, opts ...func(*singleRedisStore)) jwt.StatefulStore {

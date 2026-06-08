@@ -86,54 +86,47 @@ func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, erro
 	return db, nil
 }
 
-// ConnectWithContext 通过 context 获取数据库连接
-func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+// validateConnectOption 校验连接参数
+func validateConnectOption(option *Option) error {
 	if option == nil {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: connect option is empty")
+		return xerror.NewXCode(xcode.ErrDBConnect, "dbutil: connect option is empty")
 	}
 	if option.Name == "" {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config name is invalid")
+		return xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config name is invalid")
 	}
 	if option.Config == nil {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config is empty")
+		return xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config is empty")
 	}
 	if len(option.Config.Driver) == 0 || len(option.Config.Dsn) == 0 {
-		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config is invalid")
+		return xerror.NewXCode(xcode.ErrDBConnect, "dbutil: config is invalid")
 	}
+	return nil
+}
 
-	// 检查 context 是否已取消
-	if err := ctx.Err(); err != nil {
-		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
-	}
-
-	opt := new(connectOption)
-	for _, builder := range optBuilders {
-		builder(opt)
-	}
-
-	actual, _ := dbRelation.LoadOrStore(option.Name, &dbHolder{})
-	holder := actual.(*dbHolder)
-
-	holder.mu.Lock()
-
-	if holder.ready {
-		// 快速路径：在锁内读取 DB 引用，释放锁后再 Ping
+// tryFastPath 快速路径：缓存命中且健康。
+// 调用方必须已确认 holder.ready 为 true（但不在锁内）。
+// 若健康则返回 (db, true)；否则重置状态并返回 (nil, false)。
+func tryFastPath(holder *dbHolder) (*gorm.DB, bool) {
+	if holder.isHealthy() {
+		holder.mu.Lock()
 		db := holder.db
 		holder.mu.Unlock()
-
-		if holder.isHealthy() {
-			return db, nil
-		}
-
-		// Ping 失败，重新加锁重置状态
-		holder.mu.Lock()
-		if holder.ready {
-			holder.ready = false
-			holder.db = nil
-			holder.err = nil
-		}
+		return db, true
 	}
+	// Ping 失败，重新加锁重置状态
+	holder.mu.Lock()
+	if holder.ready {
+		holder.ready = false
+		holder.db = nil
+		holder.err = nil
+	}
+	holder.mu.Unlock()
+	return nil, false
+}
 
+// connectOrWait 等待其他协程完成重连或由当前协程执行重连。
+// 调用时必须持有 holder.mu 锁，本函数内部负责加解锁。
+func connectOrWait(ctx context.Context, holder *dbHolder, option *Option, opt *connectOption) (*gorm.DB, error) {
 	// 如果另一个协程正在重连，等待其完成
 	if holder.reconnecting {
 		ch := holder.reconnectCh
@@ -189,6 +182,37 @@ func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func
 	}
 
 	return holder.db, holder.err
+}
+
+// ConnectWithContext 通过 context 获取数据库连接
+func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+	if err := validateConnectOption(option); err != nil {
+		return nil, err
+	}
+
+	// 检查 context 是否已取消
+	if err := ctx.Err(); err != nil {
+		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
+	}
+
+	opt := new(connectOption)
+	for _, builder := range optBuilders {
+		builder(opt)
+	}
+
+	actual, _ := dbRelation.LoadOrStore(option.Name, &dbHolder{})
+	holder := actual.(*dbHolder)
+
+	holder.mu.Lock()
+
+	if holder.ready {
+		holder.mu.Unlock()
+		if db, ok := tryFastPath(holder); ok {
+			return db, nil
+		}
+		holder.mu.Lock()
+	}
+	return connectOrWait(ctx, holder, option, opt)
 }
 
 // Connect 获取数据库连接

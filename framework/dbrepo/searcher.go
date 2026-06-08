@@ -52,6 +52,8 @@ type searcher[M any, F any] struct {
 	cursorExtractor func(*M) string
 }
 
+var _ ISearcher[struct{}, struct{}] = (*searcher[struct{}, struct{}])(nil)
+
 // NewSearcher 创建查询构建器
 // db 不能为 nil，否则返回错误
 func NewSearcher[M any, F any](db *gorm.DB, opts ...SearcherOption[M, F]) (ISearcher[M, F], error) {

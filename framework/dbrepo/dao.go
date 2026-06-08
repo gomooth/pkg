@@ -77,6 +77,8 @@ type dao[T any] struct {
 	batchSize int // 批量创建时的批次大小，默认 100
 }
 
+var _ IDAO[struct{}] = (*dao[struct{}])(nil)
+
 func (d *dao[T]) setBatchSize(size int) {
 	if size > 0 {
 		d.batchSize = size

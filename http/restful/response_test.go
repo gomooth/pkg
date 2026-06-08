@@ -717,22 +717,47 @@ func TestWithResponseLogger(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-// --- WithResponseShowXCode empty call resets whitelist ---
+// --- WithResponseShowXCode panics on no args ---
 
-func TestWithResponseShowXCode_EmptyCallResetsWhitelist(t *testing.T) {
+func TestWithResponseShowXCode_PanicsOnNoArgs(t *testing.T) {
+	assert.Panics(t, func() {
+		WithResponseShowXCode()
+	}, "calling WithResponseShowXCode with no args should panic")
+}
+
+func TestWithResponseShowXCode_PanicMessage(t *testing.T) {
+	defer func() {
+		r := recover()
+		assert.NotNil(t, r)
+		msg, ok := r.(string)
+		assert.True(t, ok)
+		assert.Contains(t, msg, "WithResponseShowAllXCode")
+	}()
+	WithResponseShowXCode()
+}
+
+// --- WithResponseShowAllXCode ---
+
+func TestWithResponseShowAllXCode_ShowsAllAfterWhitelist(t *testing.T) {
+	// 先设置白名单，再用 WithResponseShowAllXCode 恢复默认行为
 	w, c := newTestContext()
-	// Call with no xcodes → empty whitelist = all visible
-	r := NewResponse(c, WithResponseShowXCode())
+	r := NewResponse(c,
+		WithResponseShowXCode(
+			xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+		),
+		WithResponseShowAllXCode(),
+	)
 
 	xerr := xerror.NewXCode(
-		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+		xcode.NewWithHTTPStatus(99999, http.StatusBadRequest, "sensitive info"),
 	)
 	r.WithError(xerr)
 
 	var body map[string]string
 	err := json.Unmarshal(w.Body.Bytes(), &body)
 	assert.Nil(t, err)
-	assert.Equal(t, "bad request", body["message"])
+	// WithResponseShowAllXCode 恢复了默认行为，所有错误码均可见
+	assert.Equal(t, "sensitive info", body["message"])
 }
 
 // --- WithErrorData with marshal error ---

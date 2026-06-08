@@ -113,6 +113,8 @@ type public struct {
 	baseStorage
 }
 
+var _ IPublicStorage = (*public)(nil)
+
 func newPublic(opts ...func(*Option)) *public {
 	root := storageRoot
 	if len(opts) > 0 {

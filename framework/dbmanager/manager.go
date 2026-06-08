@@ -14,6 +14,8 @@ type memoryManager struct {
 	connections sync.Map
 }
 
+var _ IDatabaseManager = (*memoryManager)(nil)
+
 // NewMemoryManager 创建内存数据库连接管理器
 func NewMemoryManager() IDatabaseManager {
 	return &memoryManager{}

@@ -26,7 +26,7 @@ func TestNewOption_Defaults(t *testing.T) {
 	assert.Equal(t, time.Duration(0), opt.RefreshDuration())
 	assert.False(t, opt.AllowQueryStringToken())
 	assert.Nil(t, opt.QueryStringTokenPaths())
-	assert.Equal(t, time.Duration(0), opt.Leeway())
+	assert.Equal(t, 30*time.Second, opt.Leeway())
 	assert.Nil(t, opt.LegacySecrets())
 	assert.Nil(t, opt.SigningMethods())
 }

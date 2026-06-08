@@ -32,6 +32,8 @@ type httpContext struct {
 	user   *User
 }
 
+var _ IHttpContext = (*httpContext)(nil)
+
 // NewContext 创建自定义 HTTP 上下文，通过选项函数进行初始化配置
 func NewContext(opts ...func(*httpContext)) IHttpContext {
 	c := &httpContext{

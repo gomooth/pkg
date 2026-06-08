@@ -75,6 +75,8 @@ type storage struct {
 	baseStorage
 }
 
+var _ IPrivateStorage = (*storage)(nil)
+
 func newStorage(dir string, opts ...func(*Option)) *storage {
 	root := storageRoot
 	if len(opts) > 0 {

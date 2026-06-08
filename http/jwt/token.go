@@ -25,6 +25,8 @@ type token struct {
 	statefulHandler StatefulStore // token 状态处理器
 }
 
+var _ IToken = (*token)(nil)
+
 // rolesFromUser 辅助函数：从用户对象中提取角色列表
 func rolesFromUser(user httpcontext.User) []string {
 	jwtRoles := make([]string, 0, len(user.Roles))
