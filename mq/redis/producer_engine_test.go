@@ -67,7 +67,7 @@ func TestProducer_ProduceBatch(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = producer.ProduceBatch(ctx, "batch-queue", []byte("a"), []byte("b"), []byte("c"))
+	err = producer.ProduceBatch(ctx, "batch-queue", [][]byte{[]byte("a"), []byte("b"), []byte("c")})
 	assert.NoError(t, err)
 
 	client := miniredisProducerClient(t, mr)
@@ -133,7 +133,7 @@ func TestProducer_ProduceBatchEmpty(t *testing.T) {
 	producer := NewProducer(mr.Addr())
 	_ = producer.Start(context.Background())
 
-	err := producer.ProduceBatch(context.Background(), "q")
+	err := producer.ProduceBatch(context.Background(), "q", nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no messages")
 

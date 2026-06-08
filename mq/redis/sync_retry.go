@@ -5,137 +5,62 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
+	mqretry "github.com/gomooth/pkg/mq/internal/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
-// retryStrategy 重试策略接口（未导出）
+// retryStrategy 重试策略接口（未导出），与 consume.RetryStrategy 兼容
 type retryStrategy interface {
 	OnMessage(ctx context.Context, queue string, data []byte) error
 }
 
-// exhaustedResult handleExhausted 的返回类型
-type exhaustedResult int
-
-const (
-	exhaustedContinue exhaustedResult = iota // 继续消费下一条
-	exhaustedStop                            // 停止消费（严重错误）
-)
-
-// handleExhausted 处理重试耗尽的消息（公共逻辑，各策略共享）
-func handleExhausted(
-	ctx context.Context,
-	queue string,
-	message []byte,
-	lastErr error,
-	deadLetter DeadLetterHandler,
-	failedHandler FailedHandlerFunc,
-	logger logutil.Logger,
-	metrics *metrics.ConsumerMetrics,
-) exhaustedResult {
-	if metrics != nil {
-		metrics.OnDeadLetter()
-	}
-
-	if deadLetter != nil {
-		if dlErr := deadLetter.OnDeadLetter(ctx, queue, message, lastErr); dlErr != nil {
-			if logger != nil {
-				logger.Error("dead letter handler failed",
-					"queue", queue, "error", dlErr)
-			}
-			return exhaustedContinue
-		}
-		return exhaustedContinue
-	}
-
-	if failedHandler != nil {
-		failedHandler(ctx, queue, message, lastErr)
-	}
-	return exhaustedContinue
-}
-
-// applyHandlerTimeout 为 handler 调用添加超时控制
-func applyHandlerTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout > 0 {
-		return context.WithTimeout(ctx, timeout)
-	}
-	return ctx, func() {}
-}
-
-// syncRetryStrategy 同步阻塞重试策略
+// syncRetryStrategy 同步阻塞重试策略，内部委托给 mqretry.SyncStrategy
 type syncRetryStrategy struct {
-	handler        IHandler
-	maxRetry       int
-	backoff        retry.BackoffStrategy
-	logger         logutil.Logger
-	metrics        *metrics.ConsumerMetrics
-	failedHandler  FailedHandlerFunc
-	deadLetter     DeadLetterHandler
-	handlerTimeout time.Duration
+	inner   *mqretry.SyncStrategy
+	handler types.IHandler
 }
 
 func newSyncRetryStrategy(
-	handler IHandler,
+	handler types.IHandler,
 	maxRetry int,
 	backoff retry.BackoffStrategy,
-	logger logutil.Logger,
-	metrics *metrics.ConsumerMetrics,
+	_ logutil.Logger,
+	m *metrics.ConsumerMetrics,
 ) *syncRetryStrategy {
+	backoffFn := mqretry.BackoffDelayFunc(func(attempt uint) time.Duration {
+		return backoff.Delay(attempt)
+	})
+
 	return &syncRetryStrategy{
-		handler:  handler,
-		maxRetry: maxRetry,
-		backoff:  backoff,
-		logger:   logger,
-		metrics:  metrics,
+		handler: handler,
+		inner: mqretry.NewSyncStrategy(mqretry.SyncConfig{
+			MaxRetry: maxRetry,
+			Backoff:  backoffFn,
+			Metrics:  m,
+		}),
 	}
 }
 
-func (s *syncRetryStrategy) SetFailedHandler(fn FailedHandlerFunc) {
-	s.failedHandler = fn
+func (s *syncRetryStrategy) SetFailedHandler(fn types.FailedHandlerFunc) {
+	s.inner.SetFailedHandler(fn)
 }
 
-func (s *syncRetryStrategy) SetDeadLetterHandler(h DeadLetterHandler) {
-	s.deadLetter = h
+func (s *syncRetryStrategy) SetDeadLetterHandler(h types.DeadLetterHandler) {
+	s.inner.SetDeadLetterHandler(h)
+}
+
+func (s *syncRetryStrategy) SetTimeout(d time.Duration) {
+	s.inner.SetTimeout(d)
 }
 
 func (s *syncRetryStrategy) OnMessage(ctx context.Context, queue string, data []byte) error {
-	var lastErr error
-
-	for attempt := 0; attempt <= s.maxRetry; attempt++ {
-		// context 取消检查
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		// 应用 handler 超时
-		hCtx, cancel := applyHandlerTimeout(ctx, s.handlerTimeout)
-		err := s.handler.Handle(hCtx, queue, data)
-		cancel()
-
-		if err == nil {
-			if s.metrics != nil {
-				s.metrics.OnConsume()
-			}
-			return nil
-		}
-
-		lastErr = err
-
-		if attempt < s.maxRetry {
-			if s.metrics != nil {
-				s.metrics.OnRetry()
-			}
-			delay := s.backoff.Delay(uint(attempt))
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
+	msg := types.NewRedisMessage(queue, data)
+	err := s.inner.OnMessage(ctx, msg, s.handler.Handle)
+	// 兼容旧行为：上下文取消时返回错误，耗尽时返回 nil
+	if err != nil && ctx.Err() != nil {
+		return err
 	}
-
-	// 重试耗尽
-	handleExhausted(ctx, queue, data, lastErr,
-		s.deadLetter, s.failedHandler, s.logger, s.metrics)
 	return nil
 }

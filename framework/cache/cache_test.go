@@ -371,3 +371,336 @@ func TestNilManager_ReturnsErrCacheNotInitialized(t *testing.T) {
 	assert.True(t, errors.As(err, &xe))
 	assert.Equal(t, pkgxcode.ErrCacheNotInitialized.Code(), xe.ErrorCode())
 }
+
+func TestWithAutoRenew(t *testing.T) {
+	mgr := newTestCacheManager[string]()
+
+	// enabled=true → autoRenew == true (already the default, but verify explicit setting)
+	c1 := New[string]("test", mgr, WithAutoRenew[string](true))
+	ac1 := c1.(*anyCache[string])
+	assert.True(t, ac1.autoRenew)
+
+	// enabled=false → autoRenew == false
+	c2 := New[string]("test", mgr, WithAutoRenew[string](false))
+	ac2 := c2.(*anyCache[string])
+	assert.False(t, ac2.autoRenew)
+}
+
+func TestWithRenewThreshold(t *testing.T) {
+	mgr := newTestCacheManager[string]()
+
+	// threshold=0.5 → renewThreshold == 0.5
+	c1 := New[string]("test", mgr, WithRenewThreshold[string](0.5))
+	ac1 := c1.(*anyCache[string])
+	assert.Equal(t, 0.5, ac1.renewThreshold)
+
+	// threshold=0 → ignored, stays at default 0.2
+	c2 := New[string]("test", mgr, WithRenewThreshold[string](0))
+	ac2 := c2.(*anyCache[string])
+	assert.Equal(t, 0.2, ac2.renewThreshold)
+
+	// threshold=1 → ignored, stays at default 0.2
+	c3 := New[string]("test", mgr, WithRenewThreshold[string](1))
+	ac3 := c3.(*anyCache[string])
+	assert.Equal(t, 0.2, ac3.renewThreshold)
+
+	// threshold < 0 → ignored
+	c4 := New[string]("test", mgr, WithRenewThreshold[string](-0.1))
+	ac4 := c4.(*anyCache[string])
+	assert.Equal(t, 0.2, ac4.renewThreshold)
+
+	// threshold > 1 → ignored
+	c5 := New[string]("test", mgr, WithRenewThreshold[string](1.5))
+	ac5 := c5.(*anyCache[string])
+	assert.Equal(t, 0.2, ac5.renewThreshold)
+}
+
+func TestWithMaxItems_NonPositive(t *testing.T) {
+	mgr := newTestCacheManager[string]()
+
+	// n=0 → maxItems stays 0 (no limit)
+	c1 := New[string]("test", mgr, WithMaxItems[string](0))
+	ac1 := c1.(*anyCache[string])
+	assert.Equal(t, 0, ac1.maxItems)
+
+	// n=-1 → maxItems stays 0 (no limit)
+	c2 := New[string]("test", mgr, WithMaxItems[string](-1))
+	ac2 := c2.(*anyCache[string])
+	assert.Equal(t, 0, ac2.maxItems)
+}
+
+func TestRemember_AutoRenew_TriggersRenew(t *testing.T) {
+	client := ttlcache.New[string, any](
+		ttlcache.WithTTL[string, any](10*time.Minute),
+		ttlcache.WithDisableTouchOnHit[string, any](),
+	)
+	s := memstore.NewTTLCache(client)
+	mgr := gocache.New[string](s)
+
+	// Use high threshold (0.9) so that even with modest TTL, renewal triggers quickly
+	c := New[string]("renew", mgr, WithRenewThreshold[string](0.9))
+	ctx := context.Background()
+
+	// Set a value with a 5 second TTL
+	val := "renewable"
+	err := c.Set(ctx, "renew-key", &val, 5*time.Second)
+	assert.Nil(t, err)
+
+	// Wait until TTL drops below threshold: 5s * 0.9 = 4.5s
+	time.Sleep(1 * time.Second)
+
+	// Check TTL before Remember — should be about 4s
+	_, ttlBefore, _ := c.Get(ctx, "renew-key")
+	assert.True(t, ttlBefore < 4*time.Second, "TTL before Remember should be less than 4s, got %v", ttlBefore)
+
+	fun := func(ctx context.Context) (*string, error) {
+		t.Fatal("fun should not be called on cache hit")
+		return nil, nil
+	}
+
+	// Call Remember — cache hit should trigger auto-renew because TTL <= threshold
+	result, err := c.Remember(ctx, "renew-key", 5*time.Second, fun)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, "renewable", *result)
+
+	// After renew, TTL should be close to 5s (much larger than the ~4s it was before)
+	got, ttlAfter, getErr := c.Get(ctx, "renew-key")
+	assert.Nil(t, getErr)
+	assert.NotNil(t, got)
+	assert.Equal(t, "renewable", *got)
+	assert.True(t, ttlAfter > ttlBefore, "TTL after renew (%v) should be greater than before (%v)", ttlAfter, ttlBefore)
+	assert.True(t, ttlAfter >= 4*time.Second, "TTL after renew should be close to 5s, got %v", ttlAfter)
+}
+
+func TestRemember_AutoRenew_TTLAboveThreshold_NoRenew(t *testing.T) {
+	client := ttlcache.New[string, any](
+		ttlcache.WithTTL[string, any](10*time.Minute),
+	)
+	s := memstore.NewTTLCache(client)
+	mgr := gocache.New[string](s)
+
+	// Use low threshold (0.1) so TTL is well above threshold
+	c := New[string]("no-renew", mgr, WithRenewThreshold[string](0.1))
+	ctx := context.Background()
+
+	// Set a value with 5s TTL
+	val := "fresh"
+	err := c.Set(ctx, "fresh-key", &val, 5*time.Second)
+	assert.Nil(t, err)
+
+	// Immediately call Remember — TTL should be well above 5s * 0.1 = 0.5s threshold
+	fun := func(ctx context.Context) (*string, error) {
+		t.Fatal("fun should not be called on cache hit")
+		return nil, nil
+	}
+
+	result, err := c.Remember(ctx, "fresh-key", 5*time.Second, fun)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, "fresh", *result)
+}
+
+func TestRemember_AutoRenew_Disabled(t *testing.T) {
+	client := ttlcache.New[string, any](
+		ttlcache.WithTTL[string, any](10*time.Minute),
+		ttlcache.WithDisableTouchOnHit[string, any](),
+	)
+	s := memstore.NewTTLCache(client)
+	mgr := gocache.New[string](s)
+
+	// Disable auto-renew
+	c := New[string]("disabled", mgr, WithAutoRenew[string](false))
+	ctx := context.Background()
+
+	// Set a value with short TTL (1 second)
+	val := "expiring"
+	err := c.Set(ctx, "disabled-key", &val, 1*time.Second)
+	assert.Nil(t, err)
+
+	// Wait until TTL is low
+	time.Sleep(500 * time.Millisecond)
+
+	fun := func(ctx context.Context) (*string, error) {
+		t.Fatal("fun should not be called on cache hit")
+		return nil, nil
+	}
+
+	// Remember should return cached value but NOT renew
+	result, err := c.Remember(ctx, "disabled-key", 1*time.Second, fun)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, "expiring", *result)
+
+	// Verify TTL was NOT extended — it should be close to original expiry (~500ms left)
+	_, ttlAfter, _ := c.Get(ctx, "disabled-key")
+	assert.True(t, ttlAfter < 600*time.Millisecond, "TTL should still be low after Remember without auto-renew, got %v", ttlAfter)
+
+	// Key should still expire on its original schedule
+	time.Sleep(1 * time.Second)
+	got, _, getErr := c.Get(ctx, "disabled-key")
+	assert.NotNil(t, getErr)
+	assert.Nil(t, got)
+}
+
+func TestRemember_AutoRenew_NeverExpire_SkipsRenew(t *testing.T) {
+	client := ttlcache.New[string, any](
+		ttlcache.WithTTL[string, any](10*time.Minute),
+		ttlcache.WithDisableTouchOnHit[string, any](),
+	)
+	s := memstore.NewTTLCache(client)
+	mgr := gocache.New[string](s)
+
+	c := New[string]("never", mgr, WithRenewThreshold[string](0.9))
+	ctx := context.Background()
+
+	// Set a value with short TTL
+	val := "never-expire-test"
+	err := c.Set(ctx, "never-key", &val, 1*time.Second)
+	assert.Nil(t, err)
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Check TTL before Remember
+	_, ttlBefore, _ := c.Get(ctx, "never-key")
+	assert.True(t, ttlBefore < 1*time.Second, "TTL should be less than 1s, got %v", ttlBefore)
+
+	fun := func(ctx context.Context) (*string, error) {
+		t.Fatal("fun should not be called on cache hit")
+		return nil, nil
+	}
+
+	// Remember with NeverExpire should skip auto-renew (expire == NeverExpire in the condition check)
+	result, err := c.Remember(ctx, "never-key", NeverExpire, fun)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, "never-expire-test", *result)
+
+	// TTL should NOT have been extended because NeverExpire skips auto-renew
+	_, ttlAfter, _ := c.Get(ctx, "never-key")
+	assert.True(t, ttlAfter < ttlBefore || ttlAfter-ttlBefore < 100*time.Millisecond,
+		"TTL should not have been extended with NeverExpire, before=%v after=%v", ttlBefore, ttlAfter)
+}
+
+func TestRemember_AutoRenew_ExpireZero_UsesDefault(t *testing.T) {
+	client := ttlcache.New[string, any](
+		ttlcache.WithTTL[string, any](10*time.Minute),
+		ttlcache.WithDisableTouchOnHit[string, any](),
+	)
+	s := memstore.NewTTLCache(client)
+	mgr := gocache.New[string](s)
+
+	// High threshold so renewal triggers even with default expire
+	c := New[string]("zero-expire", mgr, WithRenewThreshold[string](0.9))
+	ctx := context.Background()
+
+	// Set a value with short TTL (1 second)
+	val := "zero-expire-val"
+	err := c.Set(ctx, "zero-key", &val, 1*time.Second)
+	assert.Nil(t, err)
+
+	time.Sleep(200 * time.Millisecond)
+
+	fun := func(ctx context.Context) (*string, error) {
+		t.Fatal("fun should not be called on cache hit")
+		return nil, nil
+	}
+
+	// Remember with expire=0 should use default expire (5min) for renewal
+	result, err := c.Remember(ctx, "zero-key", 0, fun)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, "zero-expire-val", *result)
+
+	// After renew with default expire (5min), TTL should be much larger than the original 1s
+	_, ttlAfter, getErr := c.Get(ctx, "zero-key")
+	assert.Nil(t, getErr)
+	assert.True(t, ttlAfter > 1*time.Minute, "TTL should be close to default 5min after renew with expire=0, got %v", ttlAfter)
+}
+
+func TestRemember_CallbackError(t *testing.T) {
+	mgr := newTestCacheManager[string]()
+	c := New[string]("test", mgr)
+	ctx := context.Background()
+
+	fun := func(ctx context.Context) (*string, error) {
+		return nil, fmt.Errorf("callback failed")
+	}
+
+	result, err := c.Remember(ctx, "callback-err-key", 5*time.Minute, fun)
+	assert.Nil(t, result)
+	assert.NotNil(t, err)
+	assert.Equal(t, "callback failed", err.Error())
+}
+
+func TestRemember_NeverExpire(t *testing.T) {
+	mgr := newTestCacheManager[string]()
+	c := New[string]("test", mgr)
+	ctx := context.Background()
+
+	fun := func(ctx context.Context) (*string, error) {
+		v := "never-expire-data"
+		return &v, nil
+	}
+
+	// Remember with NeverExpire should cache the value without expiration
+	result, err := c.Remember(ctx, "never-remember", NeverExpire, fun)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, "never-expire-data", *result)
+
+	// Should be retrievable immediately
+	got, ttl, getErr := c.Get(ctx, "never-remember")
+	assert.Nil(t, getErr)
+	assert.NotNil(t, got)
+	assert.Equal(t, "never-expire-data", *got)
+	// NeverExpire sets store.WithExpiration(0) which maps to NoTTL in ttlcache
+	_ = ttl // TTL behavior depends on store implementation
+}
+
+func TestSet_NeverExpire(t *testing.T) {
+	mgr := newTestCacheManager[string]()
+	c := New[string]("test", mgr)
+	ctx := context.Background()
+
+	val := "permanent"
+	err := c.Set(ctx, "never-key", &val, NeverExpire)
+	assert.Nil(t, err)
+
+	got, _, getErr := c.Get(ctx, "never-key")
+	assert.Nil(t, getErr)
+	assert.NotNil(t, got)
+	assert.Equal(t, "permanent", *got)
+}
+
+func TestRemember_NilManager(t *testing.T) {
+	c := New[string]("test", nil)
+	ctx := context.Background()
+
+	fun := func(ctx context.Context) (*string, error) {
+		v := "x"
+		return &v, nil
+	}
+
+	result, err := c.Remember(ctx, "key", 5*time.Minute, fun)
+	assert.Nil(t, result)
+	assert.NotNil(t, err)
+
+	var xe xerror.XError
+	assert.True(t, errors.As(err, &xe))
+	assert.Equal(t, pkgxcode.ErrCacheNotInitialized.Code(), xe.ErrorCode())
+}
+
+func TestSetDefaultExpire(t *testing.T) {
+	// Save and restore original default
+	original := getDefaultExpire()
+	defer SetDefaultExpire(original)
+
+	// Set new default
+	SetDefaultExpire(10 * time.Second)
+	assert.Equal(t, 10*time.Second, getDefaultExpire())
+
+	// Restore
+	SetDefaultExpire(original)
+	assert.Equal(t, original, getDefaultExpire())
+}

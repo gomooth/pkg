@@ -1,9 +1,13 @@
 package kafka
 
-import "time"
+import (
+	"time"
+
+	"github.com/gomooth/pkg/mq/internal/types"
+)
 
 // NewConsumer 创建消费者服务实例
-func NewConsumer(brokers []string, opts ...ConsumerOption) IConsumeServer {
+func NewConsumer(brokers []string, opts ...ConsumerOption) types.IConsumeServer {
 	cfg := consumerConfig{
 		timeout: 5 * time.Second,
 	}

@@ -11,7 +11,9 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/IBM/sarama/mocks"
+	"github.com/gomooth/pkg/mq/internal/engine"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +26,7 @@ func TestNewProducer_DefaultConfig(t *testing.T) {
 	require.NotNil(t, p)
 
 	// Verify IProducer interface
-	var _ IProducer = p
+	var _ types.IProducer = p
 }
 
 func TestNewProducer_WithOptions(t *testing.T) {
@@ -55,22 +57,13 @@ func TestProducerImpl_ProduceNotConnected(t *testing.T) {
 	err := p.Produce(context.Background(), "test", []byte("hello"))
 	assert.Error(t, err)
 
-	err = p.ProduceBatch(context.Background(), "test", []byte("hello"))
-	assert.Error(t, err)
-
-	err = p.ProduceOrdered(context.Background(), "test", []byte("key"), []byte("hello"))
+	err = p.ProduceBatch(context.Background(), "test", [][]byte{[]byte("hello")})
 	assert.Error(t, err)
 }
 
 func TestProducerImpl_ProduceBatchEmptyMessages(t *testing.T) {
 	p := NewProducer([]string{"localhost:9092"})
-	err := p.ProduceBatch(context.Background(), "test")
-	assert.Error(t, err)
-}
-
-func TestProducerImpl_ProduceOrderedEmptyMessages(t *testing.T) {
-	p := NewProducer([]string{"localhost:9092"})
-	err := p.ProduceOrdered(context.Background(), "test", []byte("key"))
+	err := p.ProduceBatch(context.Background(), "test", nil)
 	assert.Error(t, err)
 }
 
@@ -83,18 +76,21 @@ func TestProducerEngine_ProduceWithMock(t *testing.T) {
 
 	mockProducer.ExpectSendMessageAndSucceed()
 
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
-	engine.mu.Lock()
-	engine.inner = mockProducer
-	engine.state.Store(producerRunning)
-	engine.mu.Unlock()
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.mu.Lock()
+	eng.inner = mockProducer
+	eng.State.Store(engine.Running)
+	eng.mu.Unlock()
 
-	err := engine.Produce(context.Background(), "test-topic", []byte("hello"))
+	err := eng.Produce(context.Background(), "test-topic", []byte("hello"))
 	assert.NoError(t, err)
 }
 
@@ -106,41 +102,46 @@ func TestProducerEngine_ProduceBatchWithMock(t *testing.T) {
 	mockProducer.ExpectSendMessageAndSucceed()
 	mockProducer.ExpectSendMessageAndSucceed()
 
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
-	engine.mu.Lock()
-	engine.inner = mockProducer
-	engine.state.Store(producerRunning)
-	engine.mu.Unlock()
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.mu.Lock()
+	eng.inner = mockProducer
+	eng.State.Store(engine.Running)
+	eng.mu.Unlock()
 
-	err := engine.ProduceBatch(context.Background(), "test-topic", []byte("msg1"), []byte("msg2"))
+	err := eng.ProduceBatch(context.Background(), "test-topic", [][]byte{[]byte("msg1"), []byte("msg2")})
 	assert.NoError(t, err)
 }
 
-func TestProducerEngine_ProduceOrderedWithMock(t *testing.T) {
+func TestProducerEngine_ProduceWithOrderKey(t *testing.T) {
 	cfg := internal.BuildProducerConfig(5 * time.Second)
 	mockProducer := mocks.NewSyncProducer(t, cfg)
 	defer mockProducer.Close()
 
 	mockProducer.ExpectSendMessageAndSucceed()
-	mockProducer.ExpectSendMessageAndSucceed()
 
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
-	engine.mu.Lock()
-	engine.inner = mockProducer
-	engine.state.Store(producerRunning)
-	engine.mu.Unlock()
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.mu.Lock()
+	eng.inner = mockProducer
+	eng.State.Store(engine.Running)
+	eng.mu.Unlock()
 
-	err := engine.ProduceOrdered(context.Background(), "test-topic", []byte("partition-key"), []byte("msg1"), []byte("msg2"))
+	err := eng.Produce(context.Background(), "test-topic", []byte("hello"), types.WithOrderKey("partition-key"))
 	assert.NoError(t, err)
 }
 
@@ -151,50 +152,40 @@ func TestProducerEngine_ProduceErrorWithMock(t *testing.T) {
 
 	mockProducer.ExpectSendMessageAndFail(errors.New("mock produce error"))
 
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
-	engine.mu.Lock()
-	engine.inner = mockProducer
-	engine.state.Store(producerRunning)
-	engine.mu.Unlock()
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.mu.Lock()
+	eng.inner = mockProducer
+	eng.State.Store(engine.Running)
+	eng.mu.Unlock()
 
-	err := engine.Produce(context.Background(), "test-topic", []byte("hello"))
+	err := eng.Produce(context.Background(), "test-topic", []byte("hello"))
 	assert.Error(t, err)
 }
 
 func TestProducerEngine_ProduceBatchError(t *testing.T) {
 	cfg := internal.BuildProducerConfig(5 * time.Second)
 
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
-	engine.state.Store(producerRunning)
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.State.Store(engine.Running)
 
 	// No inner producer
-	err := engine.ProduceBatch(context.Background(), "test-topic", []byte("msg1"))
-	assert.Error(t, err)
-}
-
-func TestProducerEngine_ProduceOrderedError(t *testing.T) {
-	cfg := internal.BuildProducerConfig(5 * time.Second)
-
-	engine := &producerEngine{
-		brokers:     []string{"localhost:9092"},
-		config:      cfg,
-		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
-	}
-	engine.state.Store(producerRunning)
-
-	// No inner producer
-	err := engine.ProduceOrdered(context.Background(), "test-topic", []byte("key"), []byte("msg1"))
+	err := eng.ProduceBatch(context.Background(), "test-topic", [][]byte{[]byte("msg1")})
 	assert.Error(t, err)
 }
 
@@ -203,31 +194,38 @@ func TestProducerEngine_StartAlreadyRunning(t *testing.T) {
 	mockProducer := mocks.NewSyncProducer(t, cfg)
 	defer mockProducer.Close()
 
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
-	engine.mu.Lock()
-	engine.inner = mockProducer
-	engine.state.Store(producerRunning)
-	engine.mu.Unlock()
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.mu.Lock()
+	eng.inner = mockProducer
+	eng.State.Store(engine.Running)
+	eng.mu.Unlock()
 
 	// Start on already-running engine should return nil
-	err := engine.Start(context.Background())
+	err := eng.Start(context.Background())
 	assert.NoError(t, err)
 }
 
 func TestProducerEngine_StartAlreadyClosed(t *testing.T) {
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      internal.BuildProducerConfig(5 * time.Second),
 		reconnectCh: make(chan struct{}, 1),
 	}
-	engine.state.Store(producerClosed)
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.State.Store(engine.Closed)
 
-	err := engine.Start(context.Background())
+	err := eng.Start(context.Background())
 	assert.Error(t, err)
 }
 
@@ -235,76 +233,88 @@ func TestProducerEngine_ShutdownWithRunningProducer(t *testing.T) {
 	cfg := internal.BuildProducerConfig(5 * time.Second)
 	mockProducer := mocks.NewSyncProducer(t, cfg)
 
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      cfg,
 		reconnectCh: make(chan struct{}, 1),
 	}
-	engine.mu.Lock()
-	engine.inner = mockProducer
-	engine.state.Store(producerRunning)
-	engine.mu.Unlock()
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.mu.Lock()
+	eng.inner = mockProducer
+	eng.State.Store(engine.Running)
+	eng.mu.Unlock()
 
 	_, cancel := context.WithCancel(context.Background())
-	engine.cancelFunc = cancel
+	eng.CancelFunc = cancel
 
-	err := engine.Shutdown(context.Background())
+	err := eng.Shutdown(context.Background())
 	assert.NoError(t, err)
-	assert.Equal(t, int32(producerClosed), engine.state.Load())
+	assert.Equal(t, int32(engine.Closed), eng.State.Load())
 }
 
 func TestProducerEngine_ShutdownFromShuttingDown(t *testing.T) {
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      internal.BuildProducerConfig(5 * time.Second),
 		reconnectCh: make(chan struct{}, 1),
 	}
-	engine.state.Store(producerShuttingDown)
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
+	}
+	eng.State.Store(engine.ShuttingDown)
 
 	// Already shutting down, should return nil
-	err := engine.Shutdown(context.Background())
+	err := eng.Shutdown(context.Background())
 	assert.NoError(t, err)
 }
 
 func TestProducerEngine_NewProducerEngineDefaults(t *testing.T) {
 	cfg := &producerConfig{timeout: 0}
-	engine := newProducerEngine([]string{"broker1:9092"}, cfg)
-	require.NotNil(t, engine)
-	assert.Equal(t, 5*time.Second, engine.timeout) // default timeout
-	assert.NotNil(t, engine.logger)
-	assert.NotNil(t, engine.config)
-	assert.NotNil(t, engine.metrics)
+	eng := newProducerEngine([]string{"broker1:9092"}, cfg)
+	require.NotNil(t, eng)
+	assert.Equal(t, 5*time.Second, eng.timeout) // default timeout
+	assert.NotNil(t, eng.Logger)
+	assert.NotNil(t, eng.config)
+	assert.NotNil(t, eng.Metrics)
 }
 
 func TestProducerEngine_NewProducerEngineCustomTimeout(t *testing.T) {
 	logger := newTestSlogLogger()
 	cfg := &producerConfig{timeout: 10 * time.Second, logger: logger}
-	engine := newProducerEngine([]string{"broker1:9092"}, cfg)
-	require.NotNil(t, engine)
-	assert.Equal(t, 10*time.Second, engine.timeout)
+	eng := newProducerEngine([]string{"broker1:9092"}, cfg)
+	require.NotNil(t, eng)
+	assert.Equal(t, 10*time.Second, eng.timeout)
 }
 
 func TestProducerEngine_NewProducerEngineCustomSaramaConfig(t *testing.T) {
 	saramaCfg := sarama.NewConfig()
 	cfg := &producerConfig{timeout: 5 * time.Second, saramaConfig: saramaCfg}
-	engine := newProducerEngine([]string{"broker1:9092"}, cfg)
-	require.NotNil(t, engine)
-	assert.Equal(t, saramaCfg, engine.config)
+	eng := newProducerEngine([]string{"broker1:9092"}, cfg)
+	require.NotNil(t, eng)
+	assert.Equal(t, saramaCfg, eng.config)
 }
 
 func TestProducerEngine_ReconnectLoopContextCancel(t *testing.T) {
-	engine := &producerEngine{
+	eng := &producerEngine{
 		brokers:     []string{"localhost:9092"},
 		config:      internal.BuildProducerConfig(5 * time.Second),
 		reconnectCh: make(chan struct{}, 1),
+	}
+	eng.Base = engine.Base{
+		Logger:  slog.Default(),
+		Metrics: metrics.NewProducerMetrics("kafka"),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
-	engine.wg.Add(1)
+	eng.WG.Add(1)
 	go func() {
-		engine.reconnectLoop(ctx)
+		eng.reconnectLoop(ctx)
 		close(done)
 	}()
 
@@ -325,7 +335,7 @@ func TestNewConsumer_DefaultConfig(t *testing.T) {
 	require.NotNil(t, c)
 
 	// Verify IConsumeServer interface
-	var _ IConsumeServer = c
+	var _ types.IConsumeServer = c
 }
 
 func TestNewConsumer_WithOptions(t *testing.T) {
@@ -350,7 +360,7 @@ func TestConsumerEngine_StartNoConsumers(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
 	err := c.Start(context.Background())
 	assert.Error(t, err)
-	assert.Equal(t, int32(ceIdle), c.state.Load())
+	assert.Equal(t, int32(engine.Idle), c.State.Load())
 }
 
 func TestConsumerEngine_HealthCheckNotRunning(t *testing.T) {
@@ -361,7 +371,7 @@ func TestConsumerEngine_HealthCheckNotRunning(t *testing.T) {
 
 func TestConsumerEngine_HealthCheckRunning(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-	c.state.Store(ceRunning)
+	c.State.Store(engine.Running)
 	err := c.HealthCheck(context.Background())
 	assert.NoError(t, err)
 }
@@ -374,25 +384,36 @@ func TestConsumerEngine_ShutdownFromIdle(t *testing.T) {
 
 func TestConsumerEngine_StartAlreadyRunning(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-	c.state.Store(ceRunning)
+	c.State.Store(engine.Running)
 	err := c.Start(context.Background())
 	assert.NoError(t, err) // already running, return nil
 }
 
 func TestConsumerEngine_StartAlreadyClosed(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-	c.state.Store(ceClosed)
+	c.State.Store(engine.Closed)
 	err := c.Start(context.Background())
 	assert.Error(t, err)
 }
 
+func TestConsumerEngine_RegisterRequiresGroup(t *testing.T) {
+	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
+
+	// Register without WithGroup should return error
+	err := c.Register("topic1", handler)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "WithGroup")
+}
+
 func TestConsumerEngine_RegisterAfterStart(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-	c.state.Store(ceRunning)
+	c.State.Store(engine.Running)
 
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
-	// Register after start should log error but not panic
-	c.Register("group", handler, "topic")
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
+	// Register after start should return error
+	err := c.Register("topic", handler, types.WithGroup("group"))
+	assert.Error(t, err)
 }
 
 func TestConsumerEngine_safeGo(t *testing.T) {
@@ -403,9 +424,9 @@ func TestConsumerEngine_safeGo(t *testing.T) {
 		}),
 	).(*consumerEngine)
 
-	c.safeGo("test-panic", func() {
+	c.SafeGo("test-panic", func() {
 		panic("test panic")
-	})
+	}, c.config.panicHandler)
 
 	time.Sleep(100 * time.Millisecond)
 	assert.True(t, panicHandled.Load(), "expected panic handler to be called")
@@ -415,9 +436,9 @@ func TestConsumerEngine_safeGoNormal(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
 
 	completed := atomic.Bool{}
-	c.safeGo("test-normal", func() {
+	c.SafeGo("test-normal", func() {
 		completed.Store(true)
-	})
+	}, nil)
 
 	time.Sleep(100 * time.Millisecond)
 	assert.True(t, completed.Load(), "expected goroutine to complete normally")
@@ -450,7 +471,7 @@ func TestConsumerEngine_newConsumerEngine_CustomSaramaConfig(t *testing.T) {
 }
 
 func TestConsumerEngine_newConsumerEngine_WithConsumers(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	c := NewConsumer([]string{"localhost:9092"},
 		WithConsumer("group1", handler, "topic1"),
 	).(*consumerEngine)
@@ -459,21 +480,13 @@ func TestConsumerEngine_newConsumerEngine_WithConsumers(t *testing.T) {
 	// The registration may fail due to broker unavailability, but no panic
 }
 
-func TestConsumerEngine_Register_WithEmptyTopic(t *testing.T) {
-	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
-
-	// Register with empty topic should log error but not panic
-	c.Register("group", handler, "")
-}
-
 func TestConsumerEngine_ShutdownFromRunning(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-	c.state.Store(ceRunning)
+	c.State.Store(engine.Running)
 
 	err := c.Shutdown(context.Background())
 	assert.NoError(t, err)
-	assert.Equal(t, int32(ceClosed), c.state.Load())
+	assert.Equal(t, int32(engine.Closed), c.State.Load())
 }
 
 func TestConsumerEngine_HealthCheckStates(t *testing.T) {
@@ -482,15 +495,15 @@ func TestConsumerEngine_HealthCheckStates(t *testing.T) {
 		state     int32
 		wantError bool
 	}{
-		{"idle", ceIdle, true},
-		{"running", ceRunning, false},
-		{"shutting_down", ceShuttingDown, true},
-		{"closed", ceClosed, true},
+		{"idle", engine.Idle, true},
+		{"running", engine.Running, false},
+		{"shutting_down", engine.ShuttingDown, true},
+		{"closed", engine.Closed, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-			c.state.Store(tt.state)
+			c.State.Store(tt.state)
 			err := c.HealthCheck(context.Background())
 			if tt.wantError {
 				assert.Error(t, err)
@@ -502,7 +515,7 @@ func TestConsumerEngine_HealthCheckStates(t *testing.T) {
 }
 
 func TestConsumerEngine_ShutdownWithRegistrations(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 
 	c := NewConsumer([]string{"localhost:9092"},
 		WithConsumerLogger(newTestSlogLogger()),
@@ -525,18 +538,18 @@ func TestConsumerEngine_ShutdownWithRegistrations(t *testing.T) {
 	})
 	c.regMu.Unlock()
 
-	c.state.Store(ceRunning)
+	c.State.Store(engine.Running)
 	_, engineCancel := context.WithCancel(context.Background())
-	c.cancelFunc = engineCancel
+	c.CancelFunc = engineCancel
 
 	err := c.Shutdown(context.Background())
 	assert.NoError(t, err)
-	assert.Equal(t, int32(ceClosed), c.state.Load())
+	assert.Equal(t, int32(engine.Closed), c.State.Load())
 }
 
 func TestConsumerEngine_ShutdownFromShuttingDown(t *testing.T) {
 	c := NewConsumer([]string{"localhost:9092"}).(*consumerEngine)
-	c.state.Store(ceShuttingDown)
+	c.State.Store(engine.ShuttingDown)
 
 	err := c.Shutdown(context.Background())
 	assert.NoError(t, err)
@@ -545,7 +558,7 @@ func TestConsumerEngine_ShutdownFromShuttingDown(t *testing.T) {
 func TestConsumerEngine_StartWithConsumerGroupError(t *testing.T) {
 	// This will fail to create a consumer group (no broker)
 	// but tests the error path in createRegistration
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	c := NewConsumer([]string{"invalid:9999"},
 		WithConsumerLogger(newTestSlogLogger()),
 		WithConsumerSaramaConfig(sarama.NewConfig()),
@@ -559,7 +572,7 @@ func TestConsumerEngine_StartWithConsumerGroupError(t *testing.T) {
 // ==================== GroupHandler 测试 ====================
 
 func TestGroupHandler_Setup(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	session := newMockSession()
 
 	gh := newGroupHandler("test-group", &groupHandlerConf{
@@ -572,7 +585,7 @@ func TestGroupHandler_Setup(t *testing.T) {
 }
 
 func TestGroupHandler_Cleanup(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	session := newMockSession()
 
 	gh := newGroupHandler("test-group", &groupHandlerConf{
@@ -586,7 +599,7 @@ func TestGroupHandler_Cleanup(t *testing.T) {
 
 func TestGroupHandler_ConsumeClaim(t *testing.T) {
 	var handled atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		handled.Add(1)
 		return nil
 	})
@@ -627,7 +640,7 @@ func TestGroupHandler_ConsumeClaim(t *testing.T) {
 }
 
 func TestGroupHandler_ConsumeClaimEmpty(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 
 	gh := newGroupHandler("test-group", &groupHandlerConf{
 		Handler:  handler,
@@ -647,7 +660,7 @@ func TestGroupHandler_ConsumeClaimEmpty(t *testing.T) {
 }
 
 func TestGroupHandler_Shutdown(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 
 	gh := newGroupHandler("test-group", &groupHandlerConf{
 		Handler:  handler,
@@ -660,7 +673,7 @@ func TestGroupHandler_Shutdown(t *testing.T) {
 
 func TestGroupHandler_AsyncMode(t *testing.T) {
 	var handled atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		handled.Add(1)
 		return nil
 	})
@@ -687,7 +700,7 @@ func TestGroupHandler_SyncModeWithRetryWarning(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 
 	// maxRetry > 1 should trigger a warning
 	_ = newGroupHandler("test-group", &groupHandlerConf{
@@ -701,7 +714,7 @@ func TestGroupHandler_SyncModeWithRetryWarning(t *testing.T) {
 }
 
 func TestGroupHandler_DefaultBackoff(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 
 	// No backoff provided - should use default
 	gh := newGroupHandler("test-group", &groupHandlerConf{

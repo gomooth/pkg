@@ -7,6 +7,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -16,13 +17,13 @@ import (
 
 type benchSuccessHandler struct{}
 
-func (benchSuccessHandler) Handle(_ context.Context, _ string, _ []byte) error {
+func (benchSuccessHandler) Handle(_ context.Context, _ types.Message) error {
 	return nil
 }
 
 type benchFailHandler struct{}
 
-func (benchFailHandler) Handle(_ context.Context, _ string, _ []byte) error {
+func (benchFailHandler) Handle(_ context.Context, _ types.Message) error {
 	return errBenchFail
 }
 
@@ -211,7 +212,7 @@ func BenchmarkWithRetryMode(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = WithRetryMode(RetryModeSync)
+		_ = WithRetryMode(types.RetryModeSync)
 	}
 }
 

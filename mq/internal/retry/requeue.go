@@ -41,6 +41,11 @@ func (s *RequeueStrategy) SetDeadLetterHandler(h types.DeadLetterHandler) {
 	s.cfg.DeadLetter = h
 }
 
+// SetTimeout 设置单次处理超时
+func (s *RequeueStrategy) SetTimeout(d time.Duration) {
+	s.cfg.Timeout = d
+}
+
 // OnMessage 对消息执行再入队重试策略。
 // 失败时通过 Tracker 跟踪重试次数，未达上限则重新入队；
 // 达到上限后调用 HandleExhausted。

@@ -10,12 +10,13 @@ import (
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
 // groupHandler sarama.ConsumerGroupHandler 适配器（未导出）
 type groupHandler struct {
 	consumerGroup string
-	handler       IHandler
+	handler       types.IHandler
 	strategy      retryStrategy
 	logger        *slog.Logger
 }
@@ -23,15 +24,15 @@ type groupHandler struct {
 // groupHandlerConf groupHandler 的配置
 type groupHandlerConf struct {
 	Logger                   *slog.Logger
-	Handler                  IHandler
+	Handler                  types.IHandler
 	MaxRetry                 int
 	Backoff                  retry.BackoffStrategy
-	FailedHandler            FailedHandlerFunc
-	DeadLetter               DeadLetterHandler
-	RetryMode                RetryMode
+	FailedHandler            types.FailedHandlerFunc
+	DeadLetter               types.DeadLetterHandler
+	RetryMode                types.RetryMode
 	RetryWorkers             int
 	RetryStore               RetryStore
-	Metrics                  *metrics.ConsumerMetrics
+	Metrics                  interface{} // 使用 interface{} 避免循环导入
 	HandlerTimeout           time.Duration
 	SyncRetryMaxTotalTimeout time.Duration
 }
@@ -54,10 +55,12 @@ func newGroupHandler(cg string, conf *groupHandlerConf) *groupHandler {
 		failedHandler = DefaultFailedHandlerFunc(internalLogger)
 	}
 
+	m, _ := conf.Metrics.(*metrics.ConsumerMetrics)
+
 	var strategy retryStrategy
 
 	switch conf.RetryMode {
-	case RetryModeAsync:
+	case types.RetryModeRequeue: // kafka maps Async to Requeue
 		store := conf.RetryStore
 		if store == nil {
 			// 默认使用 MemoryRetryStore（水位线模式）
@@ -71,7 +74,7 @@ func newGroupHandler(cg string, conf *groupHandlerConf) *groupHandler {
 			}
 		}
 		engine := newAsyncRetryEngineWithStore(cg, conf.Handler, conf.MaxRetry, backoff,
-			conf.HandlerTimeout, numWorkers, store, internalLogger, conf.Metrics)
+			conf.HandlerTimeout, numWorkers, store, internalLogger, m)
 		engine.SetFailedHandler(failedHandler)
 		engine.SetDeadLetterHandler(conf.DeadLetter)
 		strategy = engine
@@ -82,7 +85,7 @@ func newGroupHandler(cg string, conf *groupHandlerConf) *groupHandler {
 				"maxRetry", conf.MaxRetry, "syncRetryMaxTotalTimeout", conf.SyncRetryMaxTotalTimeout)
 		}
 		s := newSyncRetryStrategy(cg, conf.Handler, conf.MaxRetry, backoff,
-			conf.SyncRetryMaxTotalTimeout, internalLogger, conf.Metrics)
+			conf.SyncRetryMaxTotalTimeout, internalLogger, m)
 		s.SetFailedHandler(failedHandler)
 		s.SetDeadLetterHandler(conf.DeadLetter)
 		strategy = s

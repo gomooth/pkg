@@ -13,6 +13,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,8 +41,8 @@ func TestWithPanicHandler(t *testing.T) {
 func TestWithConsumers(t *testing.T) {
 	cfg := &consumerConfig{}
 	regs := []ConsumerRegistration{
-		{Queue: "q1", Handler: FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil })},
-		{Queue: "q2", Handler: FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil })},
+		{Queue: "q1", Handler: types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })},
+		{Queue: "q2", Handler: types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })},
 	}
 	WithConsumers(regs...)(cfg)
 	assert.Len(t, cfg.consumers, 2)
@@ -91,7 +92,7 @@ func TestConsumer_RegisterAfterStart(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil })),
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })),
 		WithEmptyQueueSleep(50*time.Millisecond),
 		WithConsumerLogger(logger),
 	)
@@ -99,9 +100,9 @@ func TestConsumer_RegisterAfterStart(t *testing.T) {
 	err := consumer.Start(context.Background())
 	require.NoError(t, err)
 
-	// Register after start should log error and skip
-	consumer.Register("q2", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil }))
-	assert.Contains(t, buf.String(), "cannot register after consumer started")
+	// Register after start should return error
+	err = consumer.Register("q2", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil }))
+	assert.Error(t, err)
 	assert.Equal(t, uint(1), consumer.Count())
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -114,14 +115,15 @@ func TestConsumer_RegisterBeforeStart(t *testing.T) {
 	defer mr.Close()
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("q1", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil })),
+		WithConsumer("q1", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
 	assert.Equal(t, uint(1), consumer.Count())
 
 	// Register before start should succeed
-	consumer.Register("q2", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil }))
+	err := consumer.Register("q2", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil }))
+	assert.NoError(t, err)
 	assert.Equal(t, uint(2), consumer.Count())
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -141,7 +143,8 @@ func TestConsumer_RegisterEmptyQueueName(t *testing.T) {
 	)
 
 	// Register with empty queue name should log error
-	consumer.Register("", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil }))
+	err := consumer.Register("", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil }))
+	assert.NoError(t, err) // Register itself doesn't return error for empty queue, just logs
 	assert.Contains(t, buf.String(), "queue name must not be empty")
 	assert.Equal(t, uint(0), consumer.Count())
 }
@@ -158,7 +161,8 @@ func TestConsumer_RegisterNilHandler(t *testing.T) {
 	)
 
 	// Register with nil handler should log error
-	consumer.Register("q1", nil)
+	err := consumer.Register("q1", nil)
+	assert.NoError(t, err) // Register itself doesn't return error for nil handler, just logs
 	assert.Contains(t, buf.String(), "handler must not be nil")
 	assert.Equal(t, uint(0), consumer.Count())
 }
@@ -170,7 +174,7 @@ func TestConsumer_ShutdownBeforeStart(t *testing.T) {
 	defer mr.Close()
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("q", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil })),
+		WithConsumer("q", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
@@ -188,7 +192,7 @@ func TestConsumer_StartAfterShutdown(t *testing.T) {
 	defer mr.Close()
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("q", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil })),
+		WithConsumer("q", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
@@ -213,7 +217,7 @@ func TestConsumer_RequeueRetry(t *testing.T) {
 	var handleAttempts atomic.Int32
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("requeue-queue", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("requeue-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			n := handleAttempts.Add(1)
 			if n < 2 {
 				return errors.New("fail")
@@ -222,7 +226,7 @@ func TestConsumer_RequeueRetry(t *testing.T) {
 		})),
 		WithMaxRetry(3),
 		WithBackoff(&retry.FixedDelay{Wait: time.Millisecond}),
-		WithRetryMode(RetryModeRequeue),
+		WithRetryMode(types.RetryModeRequeue),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
@@ -253,7 +257,7 @@ func TestSyncRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 	var dlCalled atomic.Int32
 
 	strategy := newSyncRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		}),
 		0,
@@ -263,7 +267,7 @@ func TestSyncRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 	)
 
 	// SetDeadLetterHandler should set the deadLetter field
-	dl := deadLetterFunc(func(ctx context.Context, queue string, message []byte, lastErr error) error {
+	dl := typesDeadLetterFunc(func(ctx context.Context, msg types.Message, lastErr error) error {
 		dlCalled.Add(1)
 		return nil
 	})
@@ -283,7 +287,7 @@ func TestRequeueRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 	var dlCalled atomic.Int32
 
 	strategy := newRequeueRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		}),
 		0, // maxRetry=0, immediate exhaustion
@@ -295,7 +299,7 @@ func TestRequeueRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 	)
 
 	// SetDeadLetterHandler should set the deadLetter field
-	dl := deadLetterFunc(func(ctx context.Context, queue string, message []byte, lastErr error) error {
+	dl := typesDeadLetterFunc(func(ctx context.Context, msg types.Message, lastErr error) error {
 		dlCalled.Add(1)
 		return nil
 	})
@@ -306,44 +310,6 @@ func TestRequeueRetryStrategy_SetDeadLetterHandler(t *testing.T) {
 	assert.Equal(t, int32(1), dlCalled.Load())
 }
 
-// ==================== handleExhausted with dead letter error ====================
-
-func TestHandleExhausted_DeadLetterError(t *testing.T) {
-	var buf bytes.Buffer
-	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, nil)))
-
-	result := handleExhausted(
-		context.Background(),
-		"test",
-		[]byte("hello"),
-		errors.New("fail"),
-		deadLetterFunc(func(ctx context.Context, queue string, message []byte, lastErr error) error {
-			return errors.New("dead letter handler failed")
-		}),
-		nil,
-		logger,
-		nil,
-	)
-
-	assert.Equal(t, exhaustedContinue, result)
-	assert.Contains(t, buf.String(), "dead letter handler failed")
-}
-
-func TestHandleExhausted_NoHandlerNoLogger(t *testing.T) {
-	result := handleExhausted(
-		context.Background(),
-		"test",
-		[]byte("hello"),
-		errors.New("fail"),
-		nil,
-		nil,
-		nil,
-		nil,
-	)
-
-	assert.Equal(t, exhaustedContinue, result)
-}
-
 // ==================== Consumer with custom Redis config ====================
 
 func TestConsumer_WithCustomRedisConfig(t *testing.T) {
@@ -352,7 +318,7 @@ func TestConsumer_WithCustomRedisConfig(t *testing.T) {
 
 	opts := &redis.Options{Addr: mr.Addr()}
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("q", FuncHandler(func(ctx context.Context, queue string, message []byte) error { return nil })),
+		WithConsumer("q", types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })),
 		WithEmptyQueueSleep(50*time.Millisecond),
 		WithConsumerRedisConfig(opts),
 	)
@@ -374,7 +340,7 @@ func TestConsumer_WithPanicHandler(t *testing.T) {
 	var panicVal atomic.Value
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("panic-queue", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("panic-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			panic("test panic")
 		})),
 		WithMaxRetry(0),
@@ -491,7 +457,7 @@ func TestProducer_ProduceBatchCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = producer.ProduceBatch(ctx, "q", []byte("a"), []byte("b"))
+	err = producer.ProduceBatch(ctx, "q", [][]byte{[]byte("a"), []byte("b")})
 	assert.Error(t, err)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -513,7 +479,7 @@ func TestProducer_ProduceBatchAfterShutdown(t *testing.T) {
 	defer cancel()
 	_ = producer.Shutdown(shutdownCtx)
 
-	err = producer.ProduceBatch(context.Background(), "q", []byte("a"))
+	err = producer.ProduceBatch(context.Background(), "q", [][]byte{[]byte("a")})
 	assert.Error(t, err)
 }
 
@@ -526,7 +492,7 @@ func TestConsumer_WithHandlerTimeout(t *testing.T) {
 	var consumed atomic.Int32
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("timeout-queue", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("timeout-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			consumed.Add(1)
 			// Simulate slow handler that will be cancelled by timeout
 			time.Sleep(200 * time.Millisecond)
@@ -558,3 +524,9 @@ func TestConsumer_WithHandlerTimeout(t *testing.T) {
 	_ = consumer.Shutdown(shutdownCtx)
 }
 
+// typesDeadLetterFunc 死信适配器，适配 types.DeadLetterHandler 接口
+type typesDeadLetterFunc func(ctx context.Context, msg types.Message, lastErr error) error
+
+func (f typesDeadLetterFunc) OnDeadLetter(ctx context.Context, msg types.Message, lastErr error) error {
+	return f(ctx, msg, lastErr)
+}

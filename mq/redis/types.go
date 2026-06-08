@@ -1,37 +1,22 @@
 package redis
 
 import (
-	"context"
-
-	"github.com/gomooth/pkg/framework/app"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
 // ==================== Consumer ====================
 
 // IHandler 消息处理器接口
-type IHandler interface {
-	Handle(ctx context.Context, queue string, message []byte) error
-}
+type IHandler = types.IHandler
 
 // DeadLetterHandler 可选死信接口，重试耗尽后调用。
-type DeadLetterHandler interface {
-	OnDeadLetter(ctx context.Context, queue string, message []byte, lastErr error) error
-}
+type DeadLetterHandler = types.DeadLetterHandler
 
 // FuncHandler 函数适配器，将函数转换为 IHandler
-type FuncHandler func(ctx context.Context, queue string, message []byte) error
+type FuncHandler = types.FuncHandler
 
-func (f FuncHandler) Handle(ctx context.Context, queue string, message []byte) error {
-	return f(ctx, queue, message)
-}
-
-// IConsumeServer 消费者服务接口（集成 app.IApp 生命周期）
-type IConsumeServer interface {
-	app.IApp
-	app.HealthChecker
-	Register(queue string, handler IHandler, queues ...string)
-	Count() uint
-}
+// IConsumeServer 消费者服务接口
+type IConsumeServer = types.IConsumeServer
 
 // ConsumerRegistration 消费者注册信息
 type ConsumerRegistration struct {
@@ -41,24 +26,35 @@ type ConsumerRegistration struct {
 
 // ==================== Producer ====================
 
-// IProducer 生产者接口（集成 app.IApp 生命周期）
-type IProducer interface {
-	app.IApp
-	Produce(ctx context.Context, queue string, message []byte) error
-	ProduceBatch(ctx context.Context, queue string, messages ...[]byte) error
-}
+// IProducer 生产者接口
+type IProducer = types.IProducer
 
 // ==================== 重试模式 ====================
 
 // RetryMode 重试模式
-type RetryMode int
+type RetryMode = types.RetryMode
 
 const (
 	// RetryModeSync 同步阻塞重试：Handle 失败后在当前循环中立即重试
-	RetryModeSync RetryMode = iota
+	RetryModeSync = types.RetryModeSync
 	// RetryModeRequeue 再入队重试：Handle 失败后将消息重新 Push 回队列尾部
-	RetryModeRequeue
+	RetryModeRequeue = types.RetryModeRequeue
 )
 
 // ==================== 失败处理器 ====================
 
+// FailedHandlerFunc 失败处理回调函数类型
+type FailedHandlerFunc = types.FailedHandlerFunc
+
+// ==================== 统一消息类型 ====================
+
+// Message 统一消息类型
+type Message = types.Message
+
+// ==================== 注册/生产选项 ====================
+
+// RegisterOption 注册消费者时的配置选项
+type RegisterOption = types.RegisterOption
+
+// ProduceOption 生产消息时的配置选项
+type ProduceOption = types.ProduceOption

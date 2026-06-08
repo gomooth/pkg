@@ -37,7 +37,10 @@ type IConsumeServer interface {
 
 // IProducer 统一生产者接口。
 // 原 kafka.IProducer.ProduceOrdered 合并为 Produce + WithOrderKey。
+// 包含生命周期方法，与 app.IApp 兼容。
 type IProducer interface {
+	Start(ctx context.Context) error
+	Shutdown(ctx context.Context) error
 	Produce(ctx context.Context, dest string, message []byte, opts ...ProduceOption) error
 	ProduceBatch(ctx context.Context, dest string, messages [][]byte, opts ...ProduceOption) error
 }

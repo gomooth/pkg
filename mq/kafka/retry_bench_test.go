@@ -7,6 +7,7 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
 // ============================================================
@@ -16,12 +17,12 @@ import (
 // benchHandler 总是成功的 handler
 type benchHandler struct{}
 
-func (benchHandler) Handle(_ context.Context, _ string, _ []byte) error { return nil }
+func (benchHandler) Handle(_ context.Context, _ types.Message) error { return nil }
 
 // benchFailHandler 总是失败的 handler
 type benchFailHandler struct{}
 
-func (benchFailHandler) Handle(_ context.Context, _ string, _ []byte) error {
+func (benchFailHandler) Handle(_ context.Context, _ types.Message) error {
 	return errTestFail
 }
 

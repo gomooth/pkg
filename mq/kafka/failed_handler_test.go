@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -16,7 +17,8 @@ func TestDefaultFailedHandlerFunc_WithLogger(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
-	handler(context.Background(), "test-group", "test-topic", []byte("msg"), nil)
+	msg := types.NewKafkaMessage("test-group", "test-topic", []byte("msg"))
+	handler(context.Background(), msg, nil)
 
 	output := buf.String()
 	if !strings.Contains(output, "test-group") {
@@ -30,7 +32,8 @@ func TestDefaultFailedHandlerFunc_WithLogger(t *testing.T) {
 func TestDefaultFailedHandlerFunc_NilLogger(t *testing.T) {
 	handler := DefaultFailedHandlerFunc(nil)
 	// 不应 panic
-	handler(context.Background(), "group", "topic", []byte("msg"), nil)
+	msg := types.NewKafkaMessage("group", "topic", []byte("msg"))
+	handler(context.Background(), msg, nil)
 }
 
 func TestDefaultFailedHandlerFunc_CancelledContext(t *testing.T) {
@@ -41,7 +44,8 @@ func TestDefaultFailedHandlerFunc_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	handler(ctx, "group", "topic", []byte("msg"), nil)
+	msg := types.NewKafkaMessage("group", "topic", []byte("msg"))
+	handler(ctx, msg, nil)
 	if !strings.Contains(buf.String(), "context") {
 		t.Error("expected log to mention context cancellation")
 	}
@@ -52,7 +56,8 @@ func TestDefaultFailedHandlerFunc_WithError(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
-	handler(context.Background(), "group", "topic", []byte("msg"), assert.AnError)
+	msg := types.NewKafkaMessage("group", "topic", []byte("msg"))
+	handler(context.Background(), msg, assert.AnError)
 
 	output := buf.String()
 	assert.Contains(t, output, "assert") // assert.AnError contains "assert"
@@ -64,7 +69,8 @@ func TestDefaultFailedHandlerFunc_NilError(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
-	handler(context.Background(), "group", "topic", []byte("msg"), nil)
+	msg := types.NewKafkaMessage("group", "topic", []byte("msg"))
+	handler(context.Background(), msg, nil)
 
 	output := buf.String()
 	assert.Contains(t, output, "message consume failed")
@@ -75,7 +81,8 @@ func TestDefaultFailedHandlerFunc_ActiveContext(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
-	handler(context.Background(), "group", "topic", []byte("msg"), nil)
+	msg := types.NewKafkaMessage("group", "topic", []byte("msg"))
+	handler(context.Background(), msg, nil)
 
 	output := buf.String()
 	// Active context should NOT mention contextErr

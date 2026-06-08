@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -22,14 +23,14 @@ type consumerConfig struct {
 	maxRetry       int
 	backoff        retry.BackoffStrategy
 	handlerTimeout time.Duration
-	retryMode      RetryMode
+	retryMode      types.RetryMode
 
 	// 队列配置
 	emptyQueueSleep time.Duration
 	queuePrefix     string
 
 	// 失败处理
-	failedHandler FailedHandlerFunc
+	failedHandler types.FailedHandlerFunc
 
 	// Panic 处理
 	panicHandler func(any)
@@ -60,7 +61,7 @@ func WithHandlerTimeout(d time.Duration) ConsumerOption {
 }
 
 // WithRetryMode 设置重试模式（默认 RetryModeSync）
-func WithRetryMode(mode RetryMode) ConsumerOption {
+func WithRetryMode(mode types.RetryMode) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.retryMode = mode
 	}
@@ -83,7 +84,7 @@ func WithEmptyQueueSleep(d time.Duration) ConsumerOption {
 }
 
 // WithFailedHandler 设置重试耗尽后的失败处理回调
-func WithFailedHandler(fn FailedHandlerFunc) ConsumerOption {
+func WithFailedHandler(fn types.FailedHandlerFunc) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.failedHandler = fn
 	}
@@ -97,7 +98,7 @@ func WithConsumers(regs ...ConsumerRegistration) ConsumerOption {
 }
 
 // WithConsumer 预注册单个消费者
-func WithConsumer(queue string, handler IHandler) ConsumerOption {
+func WithConsumer(queue string, handler types.IHandler) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.consumers = append(c.consumers, ConsumerRegistration{
 			Queue:   queue,

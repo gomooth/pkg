@@ -4,24 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/pkg/mq/internal/engine"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 	"github.com/gomooth/xerror"
-)
-
-const (
-	ceIdle         int32 = 0
-	ceRunning      int32 = 1
-	ceShuttingDown int32 = 2
-	ceClosed       int32 = 3
 )
 
 const maxConsumeErrors = 50
@@ -36,22 +29,16 @@ type consumerRegistration struct {
 
 // consumerEngine 消费者生命周期引擎（未导出）
 type consumerEngine struct {
+	engine.Base
 	brokers []string
 	config  *consumerConfig
 
 	registrations []consumerRegistration
 	regMu         sync.Mutex
-
-	state      atomic.Int32
-	cancelFunc context.CancelFunc
-	wg         sync.WaitGroup
-
-	logger  *slog.Logger
-	metrics *metrics.ConsumerMetrics
 }
 
 // 编译时接口检查
-var _ IConsumeServer = (*consumerEngine)(nil)
+var _ types.IConsumeServer = (*consumerEngine)(nil)
 
 func newConsumerEngine(brokers []string, cfg *consumerConfig) *consumerEngine {
 	logger := cfg.logger
@@ -71,34 +58,43 @@ func newConsumerEngine(brokers []string, cfg *consumerConfig) *consumerEngine {
 		saramaConfig = internal.BuildConsumerConfig(timeout)
 	}
 
-	metrics := metrics.NewConsumerMetrics("kafka")
+	m := metrics.NewConsumerMetrics("kafka")
 
-	engine := &consumerEngine{
+	eng := &consumerEngine{
+		Base: engine.Base{
+			Logger:       logger,
+			Metrics:      m,
+			PanicHandler: cfg.panicHandler,
+		},
 		brokers: brokers,
 		config:  cfg,
-		logger:  logger,
-		metrics: metrics,
 	}
 
 	// 预注册配置中的消费者
 	for _, reg := range cfg.consumers {
-		if err := engine.createRegistration(reg.Group, reg.Handler, reg.Topics, saramaConfig); err != nil {
+		if err := eng.createRegistration(reg.Group, reg.Handler, reg.Topics, saramaConfig); err != nil {
 			logger.Error("failed to create consumer group registration", "group", reg.Group, "error", err)
 		}
 	}
 
-	return engine
+	return eng
 }
 
-func (e *consumerEngine) Register(group string, handler IHandler, topic string, topics ...string) {
-	allTopics := append([]string{topic}, topics...)
+func (e *consumerEngine) Register(dest string, handler types.IHandler, opts ...types.RegisterOption) error {
 	e.regMu.Lock()
 	defer e.regMu.Unlock()
 
-	if e.state.Load() != ceIdle {
-		e.logger.Error("cannot register after consumer started", "group", group)
-		return
+	if e.State.Load() != engine.Idle {
+		return xerror.NewXCode(xcode.ErrMQConsume, "cannot register after consumer started")
 	}
+
+	// 解析选项，kafka 必须提供 WithGroup
+	cfg := types.ApplyRegisterOptions(opts)
+	if cfg.Group == "" {
+		return xerror.NewXCode(xcode.ErrMQConsume, "kafka requires WithGroup option")
+	}
+
+	allTopics := append([]string{dest}, cfg.ExtraTopics...)
 
 	saramaConfig := e.config.saramaConfig
 	if saramaConfig == nil {
@@ -109,9 +105,10 @@ func (e *consumerEngine) Register(group string, handler IHandler, topic string, 
 		saramaConfig = internal.BuildConsumerConfig(timeout)
 	}
 
-	if err := e.createRegistration(group, handler, allTopics, saramaConfig); err != nil {
-		e.logger.Error("failed to create consumer group registration", "group", group, "error", err)
+	if err := e.createRegistration(cfg.Group, handler, allTopics, saramaConfig); err != nil {
+		return err
 	}
+	return nil
 }
 
 func (e *consumerEngine) Count() uint {
@@ -120,7 +117,7 @@ func (e *consumerEngine) Count() uint {
 	return uint(len(e.registrations))
 }
 
-func (e *consumerEngine) createRegistration(group string, handler IHandler, topics []string, saramaConfig *sarama.Config) error {
+func (e *consumerEngine) createRegistration(group string, handler types.IHandler, topics []string, saramaConfig *sarama.Config) error {
 	for _, t := range topics {
 		if len(t) == 0 {
 			return xerror.New("kafka: topic must not be empty")
@@ -141,13 +138,13 @@ func (e *consumerEngine) createRegistration(group string, handler IHandler, topi
 	}
 
 	// 检查 handler 是否实现 DeadLetterHandler
-	var deadLetter DeadLetterHandler
-	if dl, ok := handler.(DeadLetterHandler); ok {
+	var deadLetter types.DeadLetterHandler
+	if dl, ok := handler.(types.DeadLetterHandler); ok {
 		deadLetter = dl
 	}
 
 	gh := newGroupHandler(group, &groupHandlerConf{
-		Logger:                   e.logger,
+		Logger:                   e.Logger,
 		Handler:                  handler,
 		MaxRetry:                 e.config.maxRetry,
 		Backoff:                  e.config.backoff,
@@ -156,7 +153,7 @@ func (e *consumerEngine) createRegistration(group string, handler IHandler, topi
 		RetryMode:                e.config.retryMode,
 		RetryWorkers:             e.config.retryWorkers,
 		RetryStore:               e.config.retryStore,
-		Metrics:                  e.metrics,
+		Metrics:                  e.Metrics,
 		HandlerTimeout:           e.config.handlerTimeout,
 		SyncRetryMaxTotalTimeout: e.config.syncRetryMaxTotalTimeout,
 	})
@@ -171,15 +168,15 @@ func (e *consumerEngine) createRegistration(group string, handler IHandler, topi
 }
 
 func (e *consumerEngine) Start(ctx context.Context) error {
-	if !e.state.CompareAndSwap(ceIdle, ceRunning) {
-		if e.state.Load() == ceRunning {
+	if !e.TryStart() {
+		if e.State.Load() == engine.Running {
 			return nil
 		}
 		return xerror.NewXCode(xcode.ErrMQConsume, "consumer already closed")
 	}
 
 	engineCtx, cancel := context.WithCancel(ctx)
-	e.cancelFunc = cancel
+	e.CancelFunc = cancel
 
 	e.regMu.Lock()
 	regs := make([]consumerRegistration, len(e.registrations))
@@ -188,39 +185,39 @@ func (e *consumerEngine) Start(ctx context.Context) error {
 
 	if len(regs) == 0 {
 		cancel()
-		e.state.Store(ceIdle)
+		e.State.Store(engine.Idle)
 		return xerror.NewXCode(xcode.ErrMQConsume, "no consumers registered")
 	}
 
 	for _, reg := range regs {
-		e.wg.Add(1)
+		e.WG.Add(1)
 		r := reg
-		e.safeGo(fmt.Sprintf("consume-%s", r.group), func() {
-			defer e.wg.Done()
+		e.SafeGo(fmt.Sprintf("consume-%s", r.group), func() {
+			defer e.WG.Done()
 			e.handle(engineCtx, r.cg, r.topics, r.handler)
-		})
+		}, e.config.panicHandler)
 	}
 
 	return nil
 }
 
 func (e *consumerEngine) handle(ctx context.Context, cg sarama.ConsumerGroup, topics []string, handler *groupHandler) {
-	e.logger.Debug("topic consumer handle start", "topics", topics)
+	e.Logger.Debug("topic consumer handle start", "topics", topics)
 	backoff := &retry.ExponentialDelay{Base: time.Second, Max: 30 * time.Second, Jitter: true}
 	attempt := uint(0)
 
 	for {
-		if e.state.Load() != ceRunning {
+		if e.State.Load() != engine.Running {
 			return
 		}
 
 		if err := cg.Consume(ctx, topics, handler); err != nil {
-			e.logger.Error("topic consume failed", "topics", topics, "error", err)
+			e.Logger.Error("topic consume failed", "topics", topics, "error", err)
 			delay := backoff.Delay(attempt)
 			attempt++
 
 			if attempt >= maxConsumeErrors {
-				e.logger.Error("topic consume exceeded max consecutive errors, pausing",
+				e.Logger.Error("topic consume exceeded max consecutive errors, pausing",
 					"topics", topics, "attempts", attempt)
 				select {
 				case <-ctx.Done():
@@ -241,14 +238,17 @@ func (e *consumerEngine) handle(ctx context.Context, cg sarama.ConsumerGroup, to
 		}
 
 		if ctx.Err() != nil {
-			e.logger.Error("topic consume context error", "topics", topics, "error", ctx.Err())
+			e.Logger.Error("topic consume context error", "topics", topics, "error", ctx.Err())
 			return
 		}
 	}
 }
 
 func (e *consumerEngine) Shutdown(ctx context.Context) error {
-	if !e.state.CompareAndSwap(ceRunning, ceShuttingDown) {
+	if !e.RequestShutdown() {
+		if e.State.Load() == engine.Idle {
+			e.State.Store(engine.Closed)
+		}
 		return nil
 	}
 
@@ -275,37 +275,21 @@ func (e *consumerEngine) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	if e.cancelFunc != nil {
-		e.cancelFunc()
+	if e.CancelFunc != nil {
+		e.CancelFunc()
 	}
 
-	e.wg.Wait()
-	e.state.Store(ceClosed)
-	return firstErr
-}
-
-func (e *consumerEngine) HealthCheck(_ context.Context) error {
-	state := e.state.Load()
-	if state != ceRunning {
-		return xerror.NewXCode(xcode.ErrMQConsume, fmt.Sprintf("consumer not running (state=%d)", state))
-	}
-	return nil
-}
-
-func (e *consumerEngine) safeGo(name string, fn func()) {
+	done := make(chan struct{})
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				e.logger.Error("goroutine panic recovered",
-					"name", name,
-					"panic", r,
-					"stack", string(debug.Stack()),
-				)
-				if e.config.panicHandler != nil {
-					e.config.panicHandler(r)
-				}
-			}
-		}()
-		fn()
+		e.WG.Wait()
+		close(done)
 	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+
+	e.State.Store(engine.Closed)
+	return firstErr
 }

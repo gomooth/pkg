@@ -7,6 +7,7 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,7 @@ func TestConsumerOption_WithPanicHandler(t *testing.T) {
 func TestConsumerOption_WithRetryMode(t *testing.T) {
 	cfg := consumerConfig{}
 	WithRetryMode(RetryModeAsync)(&cfg)
-	assert.Equal(t, RetryModeAsync, cfg.retryMode)
+	assert.Equal(t, types.RetryModeRequeue, cfg.retryMode) // RetryModeAsync maps to RetryModeRequeue
 }
 
 func TestConsumerOption_WithRetryWorkers(t *testing.T) {
@@ -78,19 +79,19 @@ func TestConsumerOption_WithRetryStore(t *testing.T) {
 func TestConsumerOption_WithFailedHandler(t *testing.T) {
 	cfg := consumerConfig{}
 	called := false
-	fn := FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+	fn := types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {
 		called = true
 	})
 	WithFailedHandler(fn)(&cfg)
 	require.NotNil(t, cfg.failedHandler)
-	cfg.failedHandler(context.Background(), "g", "t", nil, nil)
+	cfg.failedHandler(context.Background(), types.NewKafkaMessage("g", "t", nil), nil)
 	assert.True(t, called)
 }
 
 func TestConsumerOption_WithConsumeGroupFailedHandler(t *testing.T) {
 	cfg := consumerConfig{}
-	fn1 := FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {})
-	fn2 := FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {})
+	fn1 := types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {})
+	fn2 := types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {})
 	WithConsumeGroupFailedHandler("group-a", fn1)(&cfg)
 	WithConsumeGroupFailedHandler("group-b", fn2)(&cfg)
 	require.NotNil(t, cfg.groupFailedHandlers)
@@ -100,7 +101,7 @@ func TestConsumerOption_WithConsumeGroupFailedHandler(t *testing.T) {
 
 func TestConsumerOption_WithConsumers(t *testing.T) {
 	cfg := consumerConfig{}
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	reg1 := ConsumerRegistration{Group: "g1", Handler: handler, Topics: []string{"t1"}}
 	reg2 := ConsumerRegistration{Group: "g2", Handler: handler, Topics: []string{"t2", "t3"}}
 	WithConsumers(reg1, reg2)(&cfg)
@@ -111,7 +112,7 @@ func TestConsumerOption_WithConsumers(t *testing.T) {
 
 func TestConsumerOption_WithConsumer(t *testing.T) {
 	cfg := consumerConfig{}
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	WithConsumer("my-group", handler, "topic1", "topic2", "topic3")(&cfg)
 	require.Len(t, cfg.consumers, 1)
 	assert.Equal(t, "my-group", cfg.consumers[0].Group)
@@ -158,4 +159,30 @@ func TestProducerOption_WithProducerSaramaConfig(t *testing.T) {
 	saramaCfg := sarama.NewConfig()
 	WithProducerSaramaConfig(saramaCfg)(&cfg)
 	assert.Equal(t, saramaCfg, cfg.saramaConfig)
+}
+
+// ==================== adaptFailedHandler 测试 ====================
+
+func TestAdaptFailedHandler_Nil(t *testing.T) {
+	result := adaptFailedHandler(nil)
+	assert.Nil(t, result)
+}
+
+func TestAdaptFailedHandler_Adapts(t *testing.T) {
+	var gotGroup, gotTopic string
+	var gotMessage []byte
+	oldFn := func(ctx context.Context, consumerGroup string, topic string, message []byte, err error) {
+		gotGroup = consumerGroup
+		gotTopic = topic
+		gotMessage = message
+	}
+	adapted := adaptFailedHandler(oldFn)
+	require.NotNil(t, adapted)
+
+	msg := types.NewKafkaMessage("my-group", "my-topic", []byte("hello"))
+	adapted(context.Background(), msg, nil)
+
+	assert.Equal(t, "my-group", gotGroup)
+	assert.Equal(t, "my-topic", gotTopic)
+	assert.Equal(t, []byte("hello"), gotMessage)
 }

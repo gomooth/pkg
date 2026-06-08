@@ -11,12 +11,13 @@ import (
 
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSyncRetryStrategy_Success(t *testing.T) {
 	strategy := newSyncRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		}),
 		3,
@@ -33,7 +34,7 @@ func TestSyncRetryStrategy_RetryThenSuccess(t *testing.T) {
 	var attempt atomic.Int32
 
 	strategy := newSyncRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			n := attempt.Add(1)
 			if n < 3 {
 				return errors.New("fail")
@@ -55,7 +56,7 @@ func TestSyncRetryStrategy_Exhausted(t *testing.T) {
 	var failedCalled atomic.Int32
 
 	strategy := newSyncRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		}),
 		2,
@@ -63,7 +64,7 @@ func TestSyncRetryStrategy_Exhausted(t *testing.T) {
 		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
-	strategy.SetFailedHandler(func(ctx context.Context, queue string, message []byte, err error) {
+	strategy.SetFailedHandler(func(ctx context.Context, msg types.Message, err error) {
 		failedCalled.Add(1)
 	})
 
@@ -74,7 +75,7 @@ func TestSyncRetryStrategy_Exhausted(t *testing.T) {
 
 func TestSyncRetryStrategy_ContextCancel(t *testing.T) {
 	strategy := newSyncRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("fail")
 		}),
 		100,
@@ -93,7 +94,7 @@ func TestSyncRetryStrategy_ContextCancel(t *testing.T) {
 
 func TestSyncRetryStrategy_HandlerTimeout(t *testing.T) {
 	strategy := newSyncRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			time.Sleep(100 * time.Millisecond)
 			return nil
 		}),
@@ -102,59 +103,11 @@ func TestSyncRetryStrategy_HandlerTimeout(t *testing.T) {
 		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
-	strategy.handlerTimeout = 10 * time.Millisecond
+	strategy.SetTimeout(10 * time.Millisecond)
 
 	err := strategy.OnMessage(context.Background(), "test", []byte("hello"))
 	// handlerTimeout 超时导致 Handle 返回 error，maxRetry=0 直接走 exhausted
 	assert.NoError(t, err) // OnMessage 不返回 exhausted 错误
-}
-
-func TestHandleExhausted_WithDeadLetter(t *testing.T) {
-	var dlCalled atomic.Int32
-
-	result := handleExhausted(
-		context.Background(),
-		"test",
-		[]byte("hello"),
-		errors.New("fail"),
-		deadLetterFunc(func(ctx context.Context, queue string, message []byte, lastErr error) error {
-			dlCalled.Add(1)
-			return nil
-		}),
-		nil,
-		nil,
-		nil,
-	)
-
-	assert.Equal(t, exhaustedContinue, result)
-	assert.Equal(t, int32(1), dlCalled.Load())
-}
-
-func TestHandleExhausted_WithFailedHandler(t *testing.T) {
-	var fhCalled atomic.Int32
-
-	result := handleExhausted(
-		context.Background(),
-		"test",
-		[]byte("hello"),
-		errors.New("fail"),
-		nil,
-		func(ctx context.Context, queue string, message []byte, err error) {
-			fhCalled.Add(1)
-		},
-		nil,
-		nil,
-	)
-
-	assert.Equal(t, exhaustedContinue, result)
-	assert.Equal(t, int32(1), fhCalled.Load())
-}
-
-// deadLetterFunc 死信适配器
-type deadLetterFunc func(ctx context.Context, queue string, message []byte, lastErr error) error
-
-func (f deadLetterFunc) OnDeadLetter(ctx context.Context, queue string, message []byte, lastErr error) error {
-	return f(ctx, queue, message, lastErr)
 }
 
 // nilLogger 返回一个丢弃所有输出的 logger

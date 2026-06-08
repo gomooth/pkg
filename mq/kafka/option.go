@@ -1,11 +1,13 @@
 package kafka
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
 // ==================== Consumer 选项 ====================
@@ -25,13 +27,13 @@ type consumerConfig struct {
 	backoff                  retry.BackoffStrategy
 	handlerTimeout           time.Duration
 	syncRetryMaxTotalTimeout time.Duration
-	retryMode                RetryMode
+	retryMode                types.RetryMode
 	retryWorkers             int
 	retryStore               RetryStore
 
 	// 失败处理
-	failedHandler       FailedHandlerFunc
-	groupFailedHandlers map[string]FailedHandlerFunc
+	failedHandler       types.FailedHandlerFunc
+	groupFailedHandlers map[string]types.FailedHandlerFunc
 
 	// Panic 处理
 	panicHandler func(any)
@@ -69,7 +71,7 @@ func WithPanicHandler(fn func(any)) ConsumerOption {
 }
 
 // WithRetryMode 设置重试模式（同步或异步）
-func WithRetryMode(mode RetryMode) ConsumerOption {
+func WithRetryMode(mode types.RetryMode) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.retryMode = mode
 	}
@@ -104,17 +106,17 @@ func WithRetryStore(store RetryStore) ConsumerOption {
 }
 
 // WithFailedHandler 设置全局失败处理回调
-func WithFailedHandler(fn FailedHandlerFunc) ConsumerOption {
+func WithFailedHandler(fn types.FailedHandlerFunc) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.failedHandler = fn
 	}
 }
 
 // WithConsumeGroupFailedHandler 设置指定消费组的失败处理回调（覆盖全局设置）
-func WithConsumeGroupFailedHandler(group string, fn FailedHandlerFunc) ConsumerOption {
+func WithConsumeGroupFailedHandler(group string, fn types.FailedHandlerFunc) ConsumerOption {
 	return func(c *consumerConfig) {
 		if c.groupFailedHandlers == nil {
-			c.groupFailedHandlers = make(map[string]FailedHandlerFunc)
+			c.groupFailedHandlers = make(map[string]types.FailedHandlerFunc)
 		}
 		c.groupFailedHandlers[group] = fn
 	}
@@ -128,7 +130,7 @@ func WithConsumers(regs ...ConsumerRegistration) ConsumerOption {
 }
 
 // WithConsumer 预注册单个消费者
-func WithConsumer(group string, handler IHandler, topic string, topics ...string) ConsumerOption {
+func WithConsumer(group string, handler types.IHandler, topic string, topics ...string) ConsumerOption {
 	return func(c *consumerConfig) {
 		allTopics := append([]string{topic}, topics...)
 		c.consumers = append(c.consumers, ConsumerRegistration{
@@ -190,5 +192,19 @@ func WithProducerLogger(l *slog.Logger) ProducerOption {
 func WithProducerSaramaConfig(cfg *sarama.Config) ProducerOption {
 	return func(c *producerConfig) {
 		c.saramaConfig = cfg
+	}
+}
+
+// ==================== 辅助：适配旧 FailedHandlerFunc 签名 ====================
+
+// adaptFailedHandler 将旧版 kafka.FailedHandlerFunc(ctx, group, topic, message, err) 适配为统一 types.FailedHandlerFunc。
+// 供外部代码过渡期使用，新代码应直接使用 types.FailedHandlerFunc。
+func adaptFailedHandler(fn func(ctx context.Context, consumerGroup string, topic string, message []byte, err error)) types.FailedHandlerFunc {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, msg types.Message, err error) {
+		group, _ := msg.KafkaGroup()
+		fn(ctx, group, msg.Queue, msg.Data, err)
 	}
 }

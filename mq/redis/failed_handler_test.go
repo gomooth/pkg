@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -16,7 +17,8 @@ func TestDefaultFailedHandlerFunc_WithLogger(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	handler := DefaultFailedHandlerFunc(logutil.NewSlogLogger(logger))
 
-	handler(context.Background(), "test-queue", []byte("hello"), errors.New("handle failed"))
+	msg := types.NewRedisMessage("test-queue", []byte("hello"))
+	handler(context.Background(), msg, errors.New("handle failed"))
 
 	output := buf.String()
 	assert.Contains(t, output, "message consume failed")
@@ -33,7 +35,8 @@ func TestDefaultFailedHandlerFunc_WithContextError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	handler(ctx, "test-queue", []byte("hello"), errors.New("handle failed"))
+	msg := types.NewRedisMessage("test-queue", []byte("hello"))
+	handler(ctx, msg, errors.New("handle failed"))
 
 	output := buf.String()
 	assert.Contains(t, output, "context canceled")
@@ -42,15 +45,17 @@ func TestDefaultFailedHandlerFunc_WithContextError(t *testing.T) {
 func TestDefaultFailedHandlerFunc_NilLogger(t *testing.T) {
 	handler := DefaultFailedHandlerFunc(nil)
 	// 不应 panic
-	handler(context.Background(), "q", []byte("m"), errors.New("e"))
+	msg := types.NewRedisMessage("q", []byte("m"))
+	handler(context.Background(), msg, errors.New("e"))
 }
 
 func TestFailedHandlerFunc(t *testing.T) {
 	var called bool
-	fn := FailedHandlerFunc(func(ctx context.Context, queue string, message []byte, err error) {
+	fn := types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {
 		called = true
 	})
 
-	fn(context.Background(), "q", []byte("m"), errors.New("e"))
+	msg := types.NewRedisMessage("q", []byte("m"))
+	fn(context.Background(), msg, errors.New("e"))
 	assert.True(t, called)
 }

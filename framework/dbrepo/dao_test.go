@@ -500,13 +500,365 @@ func TestDAO_Update_ZeroValueFields(t *testing.T) {
 	assert.NoError(t, err)
 	id := record.ID
 
-	result := db.WithContext(ctx).Model(&testModel{}).Where("id = ?", id).Update("name", "")
-	assert.NoError(t, result.Error)
+	t.Run("update zero-value field via DAO Update method with Select", func(t *testing.T) {
+		// Use DAO's Update with Select to set name to empty string (zero value)
+		err := dao.Update(ctx, id, &testModel{Name: ""}, "name")
+		assert.NoError(t, err)
 
-	updated, err := dao.First(ctx, id)
+		updated, err := dao.First(ctx, id)
+		assert.NoError(t, err)
+		assert.Equal(t, "", updated.Name)
+		assert.Equal(t, "alice@example.com", updated.Email)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// DB 错误路径测试（使用 sqlmock）
+// ---------------------------------------------------------------------------
+
+func TestDAO_Create_DBError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	dao, err := NewDAO[testModel](db)
 	assert.NoError(t, err)
-	assert.Equal(t, "", updated.Name)
-	assert.Equal(t, "alice@example.com", updated.Email)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO `test_models`")).
+		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
+
+	err = dao.Create(ctx, &testModel{Name: "Alice", Email: "alice@example.com"})
+	assert.Error(t, err)
+	assert.True(t, xerror.IsXCode(err, xcode.DBFailed))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDAO_Creates_DBError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO `test_models`")).
+		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
+
+	err = dao.Creates(ctx, []*testModel{
+		{Name: "Alice", Email: "alice@example.com"},
+	})
+	assert.Error(t, err)
+	assert.True(t, xerror.IsXCode(err, xcode.DBFailed))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDAO_Save_DBError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	// GORM Save with zero-ID record generates INSERT; with non-zero ID generates UPDATE.
+	// Test the INSERT path (new record).
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO `test_models`")).
+		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
+
+	err = dao.Save(ctx, &testModel{Name: "Alice", Email: "alice@example.com"})
+	assert.Error(t, err)
+	assert.True(t, xerror.IsXCode(err, xcode.DBFailed))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDAO_First_DBError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	// Simulate a generic DB error (not ErrRecordNotFound)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `test_models` WHERE id = ? AND `test_models`.`deleted_at` IS NULL ORDER BY `test_models`.`id` LIMIT ?")).
+		WithArgs(uint(42), 1).
+		WillReturnError(fmt.Errorf("connection refused"))
+
+	result, err := dao.First(ctx, 42)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.True(t, xerror.IsXCode(err, xcode.DBFailed))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDAO_Delete_DBError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE `test_models` SET `deleted_at`=? WHERE id = ? AND `test_models`.`deleted_at` IS NULL")).
+		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
+
+	rowsAffected, err := dao.Delete(ctx, 42)
+	assert.Error(t, err)
+	assert.Equal(t, int64(0), rowsAffected)
+	assert.True(t, xerror.IsXCode(err, xcode.DBFailed))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDAO_Remove_DBError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM `test_models` WHERE id = ?")).
+		WithArgs(uint(42)).
+		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
+
+	rowsAffected, err := dao.Remove(ctx, 42)
+	assert.Error(t, err)
+	assert.Equal(t, int64(0), rowsAffected)
+	assert.True(t, xerror.IsXCode(err, xcode.DBFailed))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDAO_Update_DBError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE `test_models` SET `updated_at`=?,`name`=? WHERE id = ? AND `test_models`.`deleted_at` IS NULL")).
+		WithArgs(sqlmock.AnyArg(), "Updated", uint(42)).
+		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
+
+	err = dao.Update(ctx, 42, &testModel{Name: "Updated"}, "name")
+	assert.Error(t, err)
+	assert.True(t, xerror.IsXCode(err, xcode.DBFailed))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDAO_Update_NilRecord(t *testing.T) {
+	db := setupTestDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	err = dao.Update(ctx, 1, nil, "name")
+	assert.Error(t, err)
+	assert.True(t, xerror.IsXCode(err, xcode.DBRequestParamError))
+}
+
+// ---------------------------------------------------------------------------
+// WithTx 事务传播边界测试
+// ---------------------------------------------------------------------------
+
+func TestDAO_WithTx_NilTxUsesDefaultDB(t *testing.T) {
+	db := setupTestDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	// WithTx(nil) returns the same DAO instance, so operations use default db
+	resultDAO := dao.WithTx(nil)
+	assert.Same(t, dao, resultDAO, "WithTx(nil) should return the same DAO instance")
+
+	// Operations on the nil-tx DAO should use the default db
+	record := &testModel{Name: "NilTx Test", Email: "niltx@example.com"}
+	err = resultDAO.Create(ctx, record)
+	assert.NoError(t, err)
+	assert.NotZero(t, record.ID)
+
+	// Verify the record is persisted (not in a transaction)
+	found, err := dao.First(ctx, record.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "NilTx Test", found.Name)
+}
+
+func TestDAO_WithTx_ValidTxExecutesOnTransaction(t *testing.T) {
+	db := setupTestDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	t.Run("create through txDAO is visible only after commit", func(t *testing.T) {
+		tx := db.Begin()
+		txDAO := dao.WithTx(tx)
+
+		record := &testModel{Name: "TxVisible", Email: "tx@example.com"}
+		err := txDAO.Create(ctx, record)
+		assert.NoError(t, err)
+		assert.NotZero(t, record.ID)
+
+		// Within the same tx, reading via txDAO should find it
+		found, err := txDAO.First(ctx, record.ID)
+		assert.NoError(t, err)
+		assert.Equal(t, "TxVisible", found.Name)
+
+		// Reading via original DAO (different connection) may or may not see it
+		// depending on isolation level — for SQLite it typically won't until commit
+
+		tx.Commit()
+
+		// After commit, original DAO should see the record
+		found, err = dao.First(ctx, record.ID)
+		assert.NoError(t, err)
+		assert.Equal(t, "TxVisible", found.Name)
+	})
+
+	t.Run("update through txDAO uses transaction connection", func(t *testing.T) {
+		// Create a record first
+		record := &testModel{Name: "Original", Email: "original@example.com"}
+		err := dao.Create(ctx, record)
+		assert.NoError(t, err)
+		id := record.ID
+
+		// Update via txDAO
+		tx := db.Begin()
+		txDAO := dao.WithTx(tx)
+		err = txDAO.Update(ctx, id, &testModel{Name: "TxUpdated"}, "name")
+		assert.NoError(t, err)
+
+		tx.Commit()
+
+		// Verify via original DAO
+		found, err := dao.First(ctx, id)
+		assert.NoError(t, err)
+		assert.Equal(t, "TxUpdated", found.Name)
+	})
+
+	t.Run("delete through txDAO uses transaction connection", func(t *testing.T) {
+		record := &testModel{Name: "ToSoftDelete", Email: "del@example.com"}
+		err := dao.Create(ctx, record)
+		assert.NoError(t, err)
+		id := record.ID
+
+		tx := db.Begin()
+		txDAO := dao.WithTx(tx)
+		_, err = txDAO.Delete(ctx, id)
+		assert.NoError(t, err)
+
+		tx.Commit()
+
+		_, err = dao.First(ctx, id)
+		assert.Error(t, err)
+		assert.True(t, xerror.IsXCode(err, xcode.DBRecordNotFound))
+	})
+
+	t.Run("remove through txDAO uses transaction connection", func(t *testing.T) {
+		record := &testModel{Name: "ToHardDelete", Email: "harddel@example.com"}
+		err := dao.Create(ctx, record)
+		assert.NoError(t, err)
+		id := record.ID
+
+		tx := db.Begin()
+		txDAO := dao.WithTx(tx)
+		_, err = txDAO.Remove(ctx, id)
+		assert.NoError(t, err)
+
+		tx.Commit()
+
+		_, err = dao.First(ctx, id)
+		assert.Error(t, err)
+		assert.True(t, xerror.IsXCode(err, xcode.DBRecordNotFound))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// CRUD 边界条件测试
+// ---------------------------------------------------------------------------
+
+func TestDAO_Delete_NonExistentRecord(t *testing.T) {
+	db := setupTestDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	// Delete a record that doesn't exist — should return 0 rows affected, no error
+	rowsAffected, err := dao.Delete(ctx, 99999)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), rowsAffected, "deleting non-existent record should affect 0 rows")
+}
+
+func TestDAO_Remove_NonExistentRecord(t *testing.T) {
+	db := setupTestDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	// Hard delete a record that doesn't exist — should return 0 rows affected, no error
+	rowsAffected, err := dao.Remove(ctx, 99999)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), rowsAffected, "removing non-existent record should affect 0 rows")
+}
+
+func TestDAO_Create_FieldSelection(t *testing.T) {
+	db := setupTestDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	t.Run("create with only required fields", func(t *testing.T) {
+		record := &testModel{Name: "OnlyName"}
+		err := dao.Create(ctx, record)
+		assert.NoError(t, err)
+		assert.NotZero(t, record.ID)
+
+		found, err := dao.First(ctx, record.ID)
+		assert.NoError(t, err)
+		assert.Equal(t, "OnlyName", found.Name)
+		assert.Equal(t, "", found.Email, "unset fields should be zero value")
+	})
+
+	t.Run("create with all fields populated", func(t *testing.T) {
+		record := &testModel{Name: "Full", Email: "full@example.com"}
+		err := dao.Create(ctx, record)
+		assert.NoError(t, err)
+		assert.NotZero(t, record.ID)
+
+		found, err := dao.First(ctx, record.ID)
+		assert.NoError(t, err)
+		assert.Equal(t, "Full", found.Name)
+		assert.Equal(t, "full@example.com", found.Email)
+	})
+}
+
+func TestDAO_Update_MultipleFields(t *testing.T) {
+	db := setupTestDB(t)
+	dao, err := NewDAO[testModel](db)
+	assert.NoError(t, err)
+	ctx := context.Background()
+
+	record := &testModel{Name: "Alice", Email: "alice@example.com"}
+	err = dao.Create(ctx, record)
+	assert.NoError(t, err)
+	id := record.ID
+
+	t.Run("update multiple fields at once", func(t *testing.T) {
+		err := dao.Update(ctx, id, &testModel{Name: "Bob", Email: "bob@example.com"}, "name", "email")
+		assert.NoError(t, err)
+
+		updated, err := dao.First(ctx, id)
+		assert.NoError(t, err)
+		assert.Equal(t, "Bob", updated.Name)
+		assert.Equal(t, "bob@example.com", updated.Email)
+	})
+
+	t.Run("update only name leaves email unchanged", func(t *testing.T) {
+		err := dao.Update(ctx, id, &testModel{Name: "Charlie"}, "name")
+		assert.NoError(t, err)
+
+		updated, err := dao.First(ctx, id)
+		assert.NoError(t, err)
+		assert.Equal(t, "Charlie", updated.Name)
+		assert.Equal(t, "bob@example.com", updated.Email, "email should remain unchanged when not in fields list")
+	})
 }
 
 // ---------------------------------------------------------------------------

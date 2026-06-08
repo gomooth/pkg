@@ -4,45 +4,31 @@ import (
 	"context"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/pkg/mq/internal/engine"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/gomooth/pkg/mq/kafka/internal"
 	"github.com/gomooth/xerror"
 	"go.opentelemetry.io/otel/codes"
 )
 
-const (
-	producerIdle         int32 = 0
-	producerRunning      int32 = 1
-	producerShuttingDown int32 = 2
-	producerClosed       int32 = 3
-)
-
 // producerEngine 生产者生命周期引擎（未导出）
 type producerEngine struct {
+	engine.Base
 	brokers []string
 	timeout time.Duration
-	logger  *slog.Logger
 
 	mu     sync.RWMutex
 	inner  sarama.SyncProducer
 	config *sarama.Config
 
-	state      atomic.Int32
-	cancelFunc context.CancelFunc
-	wg         sync.WaitGroup
-
 	reconnectCh chan struct{}
-	metrics     *metrics.ProducerMetrics
 }
-
-// 编译时接口检查
-var _ IProducer = (*producerImpl)(nil)
 
 func newProducerEngine(brokers []string, cfg *producerConfig) *producerEngine {
 	timeout := cfg.timeout
@@ -64,18 +50,20 @@ func newProducerEngine(brokers []string, cfg *producerConfig) *producerEngine {
 	}
 
 	return &producerEngine{
+		Base: engine.Base{
+			Logger:  logger,
+			Metrics: metrics.NewProducerMetrics("kafka"),
+		},
 		brokers:     brokers,
 		timeout:     timeout,
-		logger:      logger,
 		config:      saramaConfig,
 		reconnectCh: make(chan struct{}, 1),
-		metrics:     metrics.NewProducerMetrics("kafka"),
 	}
 }
 
 func (e *producerEngine) Start(ctx context.Context) error {
-	if !e.state.CompareAndSwap(producerIdle, producerRunning) {
-		if e.state.Load() == producerRunning {
+	if !e.TryStart() {
+		if e.State.Load() == engine.Running {
 			return nil
 		}
 		return xerror.NewXCode(xcode.ErrMQPublish, "producer already closed")
@@ -84,7 +72,7 @@ func (e *producerEngine) Start(ctx context.Context) error {
 	// 初始连接
 	p, err := sarama.NewSyncProducer(e.brokers, e.config)
 	if err != nil {
-		e.state.Store(producerIdle)
+		e.State.Store(engine.Idle)
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
@@ -93,30 +81,30 @@ func (e *producerEngine) Start(ctx context.Context) error {
 	e.mu.Unlock()
 
 	engineCtx, cancel := context.WithCancel(ctx)
-	e.cancelFunc = cancel
+	e.CancelFunc = cancel
 
 	// 启动重连协程
-	e.wg.Add(1)
+	e.WG.Add(1)
 	go e.reconnectLoop(engineCtx)
 
 	return nil
 }
 
 func (e *producerEngine) Shutdown(ctx context.Context) error {
-	if !e.state.CompareAndSwap(producerRunning, producerShuttingDown) {
-		if e.state.Load() == producerIdle {
-			e.state.Store(producerClosed)
+	if !e.RequestShutdown() {
+		if e.State.Load() == engine.Idle {
+			e.State.Store(engine.Closed)
 		}
 		return nil
 	}
 
-	if e.cancelFunc != nil {
-		e.cancelFunc()
+	if e.CancelFunc != nil {
+		e.CancelFunc()
 	}
 
 	done := make(chan struct{})
 	go func() {
-		e.wg.Wait()
+		e.WG.Wait()
 		close(done)
 	}()
 
@@ -126,14 +114,22 @@ func (e *producerEngine) Shutdown(ctx context.Context) error {
 	}
 
 	e.markDisconnected()
-	e.state.Store(producerClosed)
+	e.State.Store(engine.Closed)
 	return nil
 }
 
-func (e *producerEngine) Produce(ctx context.Context, topic string, message []byte) error {
+func (e *producerEngine) Produce(ctx context.Context, topic string, message []byte, opts ...types.ProduceOption) error {
+	produceCfg := types.ApplyProduceOptions(opts)
+
 	msgs := []*sarama.ProducerMessage{
 		{Topic: topic, Value: sarama.ByteEncoder(message)},
 	}
+
+	// If OrderKey is set, use ordered production logic (merged from ProduceOrdered)
+	if produceCfg.OrderKey != "" {
+		msgs[0].Key = sarama.ByteEncoder(produceCfg.OrderKey)
+	}
+
 	ctx, span := injectProducerTrace(ctx, topic, msgs)
 	defer span.End()
 
@@ -147,42 +143,25 @@ func (e *producerEngine) Produce(ctx context.Context, topic string, message []by
 	return err
 }
 
-func (e *producerEngine) ProduceBatch(ctx context.Context, topic string, messages ...[]byte) error {
+func (e *producerEngine) ProduceBatch(ctx context.Context, topic string, messages [][]byte, opts ...types.ProduceOption) error {
 	if len(messages) == 0 {
 		return xerror.NewXCode(xcode.ErrMQPublish, "no messages")
 	}
+
+	produceCfg := types.ApplyProduceOptions(opts)
+
 	msgs := make([]*sarama.ProducerMessage, len(messages))
 	for i, msg := range messages {
 		msgs[i] = &sarama.ProducerMessage{
 			Topic: topic,
 			Value: sarama.ByteEncoder(msg),
 		}
-	}
-	ctx, span := injectProducerTrace(ctx, topic, msgs)
-	defer span.End()
-
-	err := e.send(ctx, msgs)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	} else {
-		span.SetStatus(codes.Ok, "")
-	}
-	return err
-}
-
-func (e *producerEngine) ProduceOrdered(ctx context.Context, topic string, partitionKey []byte, messages ...[]byte) error {
-	if len(messages) == 0 {
-		return xerror.NewXCode(xcode.ErrMQPublish, "no messages")
-	}
-	msgs := make([]*sarama.ProducerMessage, len(messages))
-	for i, msg := range messages {
-		msgs[i] = &sarama.ProducerMessage{
-			Topic: topic,
-			Key:   sarama.ByteEncoder(partitionKey),
-			Value: sarama.ByteEncoder(msg),
+		// If OrderKey is set, apply to all messages in batch
+		if produceCfg.OrderKey != "" {
+			msgs[i].Key = sarama.ByteEncoder(produceCfg.OrderKey)
 		}
 	}
+
 	ctx, span := injectProducerTrace(ctx, topic, msgs)
 	defer span.End()
 
@@ -211,16 +190,16 @@ func (e *producerEngine) send(ctx context.Context, msgs []*sarama.ProducerMessag
 
 	err := producer.SendMessages(msgs)
 	if err != nil {
-		if e.metrics != nil {
-			e.metrics.OnError()
+		if m, ok := e.Metrics.(*metrics.ProducerMetrics); ok && m != nil {
+			m.OnError()
 		}
 		e.markDisconnected()
 		e.triggerReconnect()
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
-	if e.metrics != nil {
-		e.metrics.OnProduce(len(msgs))
+	if m, ok := e.Metrics.(*metrics.ProducerMetrics); ok && m != nil {
+		m.OnProduce(len(msgs))
 	}
 	return nil
 }
@@ -243,7 +222,7 @@ func (e *producerEngine) triggerReconnect() {
 }
 
 func (e *producerEngine) reconnectLoop(ctx context.Context) {
-	defer e.wg.Done()
+	defer e.WG.Done()
 
 	backoffStrategy := &retry.ExponentialDelay{
 		Base:   1 * time.Second,
@@ -266,7 +245,7 @@ func (e *producerEngine) reconnectLoop(ctx context.Context) {
 
 				p, err := sarama.NewSyncProducer(e.brokers, e.config)
 				if err != nil {
-					e.logger.Error("producer reconnect failed", "error", err, "attempt", attempt)
+					e.Logger.Error("producer reconnect failed", "error", err, "attempt", attempt)
 					delay := backoffStrategy.Delay(attempt)
 					attempt++
 					select {
@@ -281,7 +260,7 @@ func (e *producerEngine) reconnectLoop(ctx context.Context) {
 				e.inner = p
 				e.mu.Unlock()
 
-				e.logger.Info("producer reconnected successfully")
+				e.Logger.Info("producer reconnected successfully")
 				attempt = 0
 				break
 			}
@@ -291,7 +270,7 @@ func (e *producerEngine) reconnectLoop(ctx context.Context) {
 
 // healthCheck 健康检查（未导出，仅内部使用）
 func (e *producerEngine) healthCheck(_ context.Context) error {
-	if e.state.Load() != producerRunning {
+	if e.State.Load() != engine.Running {
 		return xerror.NewXCode(xcode.ErrMQPublish, "producer not running")
 	}
 	return nil

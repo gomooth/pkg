@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 
 	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/pkg/mq/internal/engine"
 	"github.com/gomooth/pkg/mq/internal/metrics"
 	mqtraceutil "github.com/gomooth/pkg/mq/internal/traceutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/gomooth/pkg/mq/redis/internal"
 	"github.com/gomooth/xerror"
 	"github.com/redis/go-redis/v9"
@@ -19,24 +20,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const (
-	peIdle         int32 = 0
-	peRunning      int32 = 1
-	peShuttingDown int32 = 2
-	peClosed       int32 = 3
-)
-
 // producerEngine 生产者生命周期引擎（未导出）
 type producerEngine struct {
-	addr  string
-	opt   *producerConfig
-	state atomic.Int32
+	engine.Base
+	addr string
+	opt  *producerConfig
 
 	mu     sync.RWMutex
 	client redis.UniversalClient
-
-	logger  *slog.Logger
-	metrics *metrics.ProducerMetrics
 }
 
 func newProducerEngine(addr string, cfg *producerConfig) *producerEngine {
@@ -45,17 +36,20 @@ func newProducerEngine(addr string, cfg *producerConfig) *producerEngine {
 		logger = slog.Default()
 	}
 
-	return &producerEngine{
-		addr:    addr,
-		opt:     cfg,
-		logger:  logger,
-		metrics: metrics.NewProducerMetrics("redis"),
+	eng := &producerEngine{
+		Base: engine.Base{
+			Logger:  logger,
+			Metrics: metrics.NewProducerMetrics("redis"),
+		},
+		addr: addr,
+		opt:  cfg,
 	}
+	return eng
 }
 
 func (e *producerEngine) Start(ctx context.Context) error {
-	if !e.state.CompareAndSwap(peIdle, peRunning) {
-		if e.state.Load() == peRunning {
+	if !e.TryStart() {
+		if e.State.Load() == engine.Running {
 			return nil
 		}
 		return xerror.NewXCode(xcode.ErrMQPublish, "producer already closed")
@@ -69,7 +63,7 @@ func (e *producerEngine) Start(ctx context.Context) error {
 
 	client := redis.NewClient(opts)
 	if err := client.Ping(ctx).Err(); err != nil {
-		e.state.Store(peIdle)
+		e.State.Store(engine.Idle)
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
@@ -81,9 +75,9 @@ func (e *producerEngine) Start(ctx context.Context) error {
 }
 
 func (e *producerEngine) Shutdown(ctx context.Context) error {
-	if !e.state.CompareAndSwap(peRunning, peShuttingDown) {
-		if e.state.Load() == peIdle {
-			e.state.Store(peClosed)
+	if !e.RequestShutdown() {
+		if e.State.Load() == engine.Idle {
+			e.State.Store(engine.Closed)
 		}
 		return nil
 	}
@@ -95,11 +89,11 @@ func (e *producerEngine) Shutdown(ctx context.Context) error {
 	}
 	e.mu.Unlock()
 
-	e.state.Store(peClosed)
+	e.State.Store(engine.Closed)
 	return nil
 }
 
-func (e *producerEngine) Produce(ctx context.Context, queue string, message []byte) error {
+func (e *producerEngine) Produce(ctx context.Context, queue string, message []byte, opts ...types.ProduceOption) error {
 	if err := ctx.Err(); err != nil {
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
@@ -132,20 +126,20 @@ func (e *producerEngine) Produce(ctx context.Context, queue string, message []by
 	if err := client.LPush(ctx, queueKey, []byte(injectedMsg)).Err(); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		if e.metrics != nil {
-			e.metrics.OnError()
+		if m, ok := e.Metrics.(*metrics.ProducerMetrics); ok && m != nil {
+			m.OnError()
 		}
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
-	if e.metrics != nil {
-		e.metrics.OnProduce(1)
+	if m, ok := e.Metrics.(*metrics.ProducerMetrics); ok && m != nil {
+		m.OnProduce(1)
 	}
 	span.SetStatus(codes.Ok, "")
 	return nil
 }
 
-func (e *producerEngine) ProduceBatch(ctx context.Context, queue string, messages ...[]byte) error {
+func (e *producerEngine) ProduceBatch(ctx context.Context, queue string, messages [][]byte, opts ...types.ProduceOption) error {
 	if len(messages) == 0 {
 		return xerror.NewXCode(xcode.ErrMQPublish, "no messages")
 	}
@@ -187,14 +181,14 @@ func (e *producerEngine) ProduceBatch(ctx context.Context, queue string, message
 	if _, err := pipe.Exec(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		if e.metrics != nil {
-			e.metrics.OnError()
+		if m, ok := e.Metrics.(*metrics.ProducerMetrics); ok && m != nil {
+			m.OnError()
 		}
 		return xerror.WrapWithXCode(err, xcode.ErrMQPublish)
 	}
 
-	if e.metrics != nil {
-		e.metrics.OnProduce(len(messages))
+	if m, ok := e.Metrics.(*metrics.ProducerMetrics); ok && m != nil {
+		m.OnProduce(len(messages))
 	}
 	span.SetStatus(codes.Ok, "")
 	return nil

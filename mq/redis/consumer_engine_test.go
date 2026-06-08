@@ -9,6 +9,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,7 @@ func TestNewConsumer(t *testing.T) {
 	defer mr.Close()
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("test-queue", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("test-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
 	)
@@ -34,7 +35,7 @@ func TestConsumer_StartShutdown(t *testing.T) {
 	var consumed atomic.Int32
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("test-queue", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("test-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			consumed.Add(1)
 			return nil
 		})),
@@ -81,7 +82,7 @@ func TestConsumer_DoubleStart(t *testing.T) {
 	defer mr.Close()
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("q", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("q", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
 		WithEmptyQueueSleep(50*time.Millisecond),
@@ -103,7 +104,7 @@ func TestConsumer_HealthCheck(t *testing.T) {
 	defer mr.Close()
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("q", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("q", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		})),
 		WithEmptyQueueSleep(50*time.Millisecond),
@@ -135,7 +136,7 @@ func TestConsumer_SyncRetry(t *testing.T) {
 	var handleAttempts atomic.Int32
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("retry-queue", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("retry-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			n := handleAttempts.Add(1)
 			if n < 3 {
 				return errors.New("fail")
@@ -144,7 +145,7 @@ func TestConsumer_SyncRetry(t *testing.T) {
 		})),
 		WithMaxRetry(5),
 		WithBackoff(&retry.FixedDelay{Wait: time.Millisecond}),
-		WithRetryMode(RetryModeSync),
+		WithRetryMode(types.RetryModeSync),
 		WithEmptyQueueSleep(50*time.Millisecond),
 	)
 
@@ -178,12 +179,12 @@ func TestConsumer_FailedHandler(t *testing.T) {
 	var failedCalled atomic.Int32
 
 	consumer := NewConsumer(mr.Addr(),
-		WithConsumer("fail-queue", FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		WithConsumer("fail-queue", types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		})),
 		WithMaxRetry(1),
 		WithBackoff(&retry.FixedDelay{Wait: time.Millisecond}),
-		WithFailedHandler(func(ctx context.Context, queue string, message []byte, err error) {
+		WithFailedHandler(func(ctx context.Context, msg types.Message, err error) {
 			failedCalled.Add(1)
 		}),
 		WithEmptyQueueSleep(50*time.Millisecond),

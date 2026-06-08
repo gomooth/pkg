@@ -12,6 +12,7 @@ import (
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,7 +37,7 @@ func (m *mockConsumerGroupSession) Context() context.Context { return m.ctx }
 func (m *mockConsumerGroupSession) Close()                   {}
 
 func TestSyncRetry_Success(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 3,
@@ -53,7 +54,7 @@ func TestSyncRetry_Success(t *testing.T) {
 
 func TestSyncRetry_RetryThenSuccess(t *testing.T) {
 	attempt := 0
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		attempt++
 		if attempt < 3 {
 			return errors.New("fail")
@@ -73,7 +74,7 @@ func TestSyncRetry_RetryThenSuccess(t *testing.T) {
 }
 
 func TestSyncRetry_Exhausted(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("always fail")
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 2,
@@ -90,7 +91,7 @@ func TestSyncRetry_Exhausted(t *testing.T) {
 }
 
 func TestSyncRetry_SetFailedHandler(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 3,
@@ -98,13 +99,13 @@ func TestSyncRetry_SetFailedHandler(t *testing.T) {
 		0, nil, nil,
 	)
 
-	strategy.SetFailedHandler(FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+	strategy.SetFailedHandler(types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {
 	}))
 	assert.NotNil(t, strategy.failedHandler)
 }
 
 func TestSyncRetry_SetDeadLetterHandler(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 3,
@@ -118,7 +119,7 @@ func TestSyncRetry_SetDeadLetterHandler(t *testing.T) {
 }
 
 func TestSyncRetry_SetSession(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 3,
@@ -130,7 +131,7 @@ func TestSyncRetry_SetSession(t *testing.T) {
 }
 
 func TestSyncRetry_ClearSession(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 3,
@@ -142,7 +143,7 @@ func TestSyncRetry_ClearSession(t *testing.T) {
 }
 
 func TestSyncRetry_OnShutdown(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 3,
@@ -154,7 +155,7 @@ func TestSyncRetry_OnShutdown(t *testing.T) {
 }
 
 func TestSyncRetry_ContextCancelled(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("fail")
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 10,
@@ -172,7 +173,7 @@ func TestSyncRetry_ContextCancelled(t *testing.T) {
 }
 
 func TestSyncRetry_TotalTimeoutExceeded(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		time.Sleep(50 * time.Millisecond)
 		return errors.New("fail")
 	})
@@ -189,7 +190,7 @@ func TestSyncRetry_TotalTimeoutExceeded(t *testing.T) {
 }
 
 func TestSyncRetry_ExhaustedWithDeadLetter(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("always fail")
 	})
 
@@ -209,7 +210,7 @@ func TestSyncRetry_ExhaustedWithDeadLetter(t *testing.T) {
 }
 
 func TestSyncRetry_ExhaustedWithDeadLetterFail(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("always fail")
 	})
 
@@ -228,12 +229,12 @@ func TestSyncRetry_ExhaustedWithDeadLetterFail(t *testing.T) {
 }
 
 func TestSyncRetry_ExhaustedWithFailedHandler(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("always fail")
 	})
 
 	fhCalled := false
-	fh := FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+	fh := types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {
 		fhCalled = true
 	})
 	strategy := newSyncRetryStrategy("test-group", handler, 1,
@@ -251,7 +252,7 @@ func TestSyncRetry_ExhaustedWithFailedHandler(t *testing.T) {
 }
 
 func TestSyncRetry_ExhaustedWithLogger(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("always fail")
 	})
 
@@ -293,7 +294,7 @@ func TestHandleExhausted_WithDeadLetter_Fail(t *testing.T) {
 
 func TestHandleExhausted_WithFailedHandler(t *testing.T) {
 	fhCalled := false
-	fh := FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+	fh := types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {
 		fhCalled = true
 	})
 	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
@@ -314,9 +315,9 @@ func TestHandleExhausted_WithDefaultFailedHandler(t *testing.T) {
 }
 
 func TestHandleExhausted_WithMetrics(t *testing.T) {
-	metrics := metrics.NewConsumerMetrics("kafka")
+	m := metrics.NewConsumerMetrics("kafka")
 	result := handleExhausted(context.Background(), "g", "topic", []byte("msg"), errors.New("err"),
-		nil, nil, nil, metrics)
+		nil, nil, nil, m)
 	assert.Equal(t, exhaustedHandled, result)
 	// Metrics OnDeadLetter should have been called
 }

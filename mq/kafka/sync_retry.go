@@ -8,6 +8,7 @@ import (
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
 // retryStrategy 重试策略接口（未导出）
@@ -29,19 +30,19 @@ const (
 // syncRetryStrategy 同步阻塞重试策略
 type syncRetryStrategy struct {
 	consumerGroup   string
-	handler         IHandler
+	handler         types.IHandler
 	maxRetry        int
 	backoff         retry.BackoffStrategy
 	maxTotalTimeout time.Duration
 	logger          logutil.Logger
 	metrics         *metrics.ConsumerMetrics
-	failedHandler   FailedHandlerFunc
-	deadLetter      DeadLetterHandler
+	failedHandler   types.FailedHandlerFunc
+	deadLetter      types.DeadLetterHandler
 }
 
 func newSyncRetryStrategy(
 	cg string,
-	handler IHandler,
+	handler types.IHandler,
 	maxRetry int,
 	backoff retry.BackoffStrategy,
 	maxTotalTimeout time.Duration,
@@ -60,12 +61,12 @@ func newSyncRetryStrategy(
 }
 
 // SetFailedHandler 设置失败处理器
-func (s *syncRetryStrategy) SetFailedHandler(fn FailedHandlerFunc) {
+func (s *syncRetryStrategy) SetFailedHandler(fn types.FailedHandlerFunc) {
 	s.failedHandler = fn
 }
 
 // SetDeadLetterHandler 设置死信处理器
-func (s *syncRetryStrategy) SetDeadLetterHandler(h DeadLetterHandler) {
+func (s *syncRetryStrategy) SetDeadLetterHandler(h types.DeadLetterHandler) {
 	s.deadLetter = h
 }
 
@@ -97,7 +98,8 @@ func (s *syncRetryStrategy) OnMessage(ctx context.Context, session sarama.Consum
 			return
 		}
 
-		err := s.handler.Handle(ctx, msg.Topic, msg.Value)
+		kafkaMsg := types.NewKafkaMessage(s.consumerGroup, msg.Topic, msg.Value)
+		err := s.handler.Handle(ctx, kafkaMsg)
 		if err == nil {
 			session.MarkMessage(msg, "")
 			if s.metrics != nil {
@@ -139,8 +141,8 @@ func handleExhausted(
 	consumerGroup, topic string,
 	message []byte,
 	lastErr error,
-	deadLetter DeadLetterHandler,
-	failedHandler FailedHandlerFunc,
+	deadLetter types.DeadLetterHandler,
+	failedHandler types.FailedHandlerFunc,
 	logger logutil.Logger,
 	metrics *metrics.ConsumerMetrics,
 ) exhaustedResult {
@@ -149,7 +151,8 @@ func handleExhausted(
 	}
 
 	if deadLetter != nil {
-		if dlErr := deadLetter.OnDeadLetter(ctx, topic, message, lastErr); dlErr != nil {
+		kafkaMsg := types.NewKafkaMessage(consumerGroup, topic, message)
+		if dlErr := deadLetter.OnDeadLetter(ctx, kafkaMsg, lastErr); dlErr != nil {
 			if logger != nil {
 				logger.Error("dead letter handler failed, offset not committed",
 					"topic", topic, "error", dlErr)
@@ -160,7 +163,8 @@ func handleExhausted(
 	}
 
 	if failedHandler != nil {
-		failedHandler(ctx, consumerGroup, topic, message, lastErr)
+		kafkaMsg := types.NewKafkaMessage(consumerGroup, topic, message)
+		failedHandler(ctx, kafkaMsg, lastErr)
 	}
 	return exhaustedHandled
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
 	"github.com/gomooth/pkg/mq/internal/metrics"
+	"github.com/gomooth/pkg/mq/internal/types"
 )
 
 // 编译时接口检查
@@ -28,7 +29,7 @@ type topicPartition struct {
 type asyncRetryEngine struct {
 	// 配置
 	consumerGroup  string
-	handler        IHandler
+	handler        types.IHandler
 	maxRetry       int
 	backoff        retry.BackoffStrategy
 	handlerTimeout time.Duration
@@ -54,8 +55,8 @@ type asyncRetryEngine struct {
 	// 依赖
 	logger        logutil.Logger
 	metrics       *metrics.ConsumerMetrics
-	failedHandler FailedHandlerFunc
-	deadLetter    DeadLetterHandler
+	failedHandler types.FailedHandlerFunc
+	deadLetter    types.DeadLetterHandler
 }
 
 const (
@@ -66,7 +67,7 @@ const (
 
 func newAsyncRetryEngine(
 	cg string,
-	handler IHandler,
+	handler types.IHandler,
 	maxRetry int,
 	backoff retry.BackoffStrategy,
 	handlerTimeout time.Duration,
@@ -95,7 +96,7 @@ func newAsyncRetryEngine(
 
 func newAsyncRetryEngineWithStore(
 	cg string,
-	handler IHandler,
+	handler types.IHandler,
 	maxRetry int,
 	backoff retry.BackoffStrategy,
 	handlerTimeout time.Duration,
@@ -114,12 +115,12 @@ func newAsyncRetryEngineWithStore(
 }
 
 // SetFailedHandler 设置失败处理器
-func (e *asyncRetryEngine) SetFailedHandler(fn FailedHandlerFunc) {
+func (e *asyncRetryEngine) SetFailedHandler(fn types.FailedHandlerFunc) {
 	e.failedHandler = fn
 }
 
 // SetDeadLetterHandler 设置死信处理器
-func (e *asyncRetryEngine) SetDeadLetterHandler(h DeadLetterHandler) {
+func (e *asyncRetryEngine) SetDeadLetterHandler(h types.DeadLetterHandler) {
 	e.deadLetter = h
 }
 
@@ -207,7 +208,8 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 	msgCtx, cancel := e.applyHandlerTimeout(ctx)
 	defer cancel()
 
-	err := e.handler.Handle(msgCtx, msg.Topic, msg.Value)
+	kafkaMsg := types.NewKafkaMessage(e.consumerGroup, msg.Topic, msg.Value)
+	err := e.handler.Handle(msgCtx, kafkaMsg)
 
 	if err == nil {
 		if e.wmStore != nil {
@@ -416,7 +418,8 @@ func (e *asyncRetryEngine) processRetry(ctx context.Context, item *RetryItem) {
 	msgCtx, cancel := e.applyHandlerTimeout(ctx)
 	defer cancel()
 
-	err := e.handler.Handle(msgCtx, item.Topic, item.Value)
+	kafkaMsg := types.NewKafkaMessage(e.consumerGroup, item.Topic, item.Value)
+	err := e.handler.Handle(msgCtx, kafkaMsg)
 
 	if err == nil {
 		// 重试成功

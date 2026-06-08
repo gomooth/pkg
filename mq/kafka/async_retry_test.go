@@ -1,14 +1,18 @@
 package kafka
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/gomooth/pkg/framework/retry"
+	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +45,7 @@ func TestAsyncRetry_OnShutdownIdempotent(t *testing.T) {
 
 func TestAsyncRetry_HandlerTimeout(t *testing.T) {
 	var calls atomic.Int32
-	slowHandler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	slowHandler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		time.Sleep(200 * time.Millisecond)
 		return errors.New("slow")
@@ -68,7 +72,7 @@ func TestAsyncRetry_HandlerTimeout(t *testing.T) {
 
 func TestAsyncRetry_SuccessWithWatermark(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return nil
 	})
@@ -101,7 +105,7 @@ func TestAsyncRetry_SuccessWithWatermark(t *testing.T) {
 
 func TestAsyncRetry_OnMessageSuccess_NonWatermark(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return nil
 	})
@@ -129,7 +133,7 @@ func TestAsyncRetry_OnMessageSuccess_NonWatermark(t *testing.T) {
 
 func TestAsyncRetry_OnMessageFail_NoRetry(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return errors.New("fail")
 	})
@@ -158,7 +162,7 @@ func TestAsyncRetry_OnMessageFail_NoRetry(t *testing.T) {
 
 func TestAsyncRetry_OnMessageFail_NoRetry_NonWatermark(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return errors.New("fail")
 	})
@@ -186,7 +190,7 @@ func TestAsyncRetry_OnMessageFail_NoRetry_NonWatermark(t *testing.T) {
 
 func TestAsyncRetry_OnMessageFail_WithRetry(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return errors.New("fail")
 	})
@@ -213,7 +217,7 @@ func TestAsyncRetry_OnMessageFail_WithRetry(t *testing.T) {
 
 func TestAsyncRetry_OnMessageFail_ScheduleError(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return errors.New("fail")
 	})
@@ -240,7 +244,7 @@ func TestAsyncRetry_OnMessageFail_ScheduleError(t *testing.T) {
 
 func TestAsyncRetry_OnMessageFail_ScheduleError_WatermarkStore(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return errors.New("fail")
 	})
@@ -268,11 +272,11 @@ func TestAsyncRetry_OnMessageFail_ScheduleError_WatermarkStore(t *testing.T) {
 func TestAsyncRetry_SetFailedHandler(t *testing.T) {
 	engine := newTestAsyncRetryEngine(t, 0, 0)
 	called := false
-	engine.SetFailedHandler(FailedHandlerFunc(func(ctx context.Context, cg string, topic string, message []byte, err error) {
+	engine.SetFailedHandler(types.FailedHandlerFunc(func(ctx context.Context, msg types.Message, err error) {
 		called = true
 	}))
 	assert.NotNil(t, engine.failedHandler)
-	engine.failedHandler(context.Background(), "g", "t", nil, nil)
+	engine.failedHandler(context.Background(), types.NewKafkaMessage("g", "t", nil), nil)
 	assert.True(t, called)
 }
 
@@ -285,7 +289,7 @@ func TestAsyncRetry_SetDeadLetterHandler(t *testing.T) {
 
 func TestAsyncRetry_processRetry_Success(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return nil
 	})
@@ -313,7 +317,7 @@ func TestAsyncRetry_processRetry_Success(t *testing.T) {
 
 func TestAsyncRetry_processRetry_Success_NonWatermark(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return nil
 	})
@@ -335,7 +339,7 @@ func TestAsyncRetry_processRetry_Success_NonWatermark(t *testing.T) {
 
 func TestAsyncRetry_processRetry_RetryableFail(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return errors.New("fail")
 	})
@@ -364,7 +368,7 @@ func TestAsyncRetry_processRetry_RetryableFail(t *testing.T) {
 
 func TestAsyncRetry_processRetry_Exhausted(t *testing.T) {
 	var calls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		calls.Add(1)
 		return errors.New("fail")
 	})
@@ -393,7 +397,7 @@ func TestAsyncRetry_processRetry_Exhausted(t *testing.T) {
 
 func TestAsyncRetry_processRetry_Exhausted_WithDeadLetter(t *testing.T) {
 	var handlerCalls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		handlerCalls.Add(1)
 		return errors.New("fail")
 	})
@@ -424,7 +428,7 @@ func TestAsyncRetry_processRetry_Exhausted_WithDeadLetter(t *testing.T) {
 }
 
 func TestAsyncRetry_processRetry_Exhausted_DeadLetterFail(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("fail")
 	})
 
@@ -454,7 +458,7 @@ func TestAsyncRetry_processRetry_Exhausted_DeadLetterFail(t *testing.T) {
 
 func TestAsyncRetry_processRetry_RescheduleFail(t *testing.T) {
 	var handlerCalls atomic.Int32
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		handlerCalls.Add(1)
 		return errors.New("fail")
 	})
@@ -475,7 +479,7 @@ func TestAsyncRetry_processRetry_RescheduleFail(t *testing.T) {
 }
 
 func TestAsyncRetry_recoverPending(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 
@@ -498,7 +502,7 @@ func TestAsyncRetry_recoverPending(t *testing.T) {
 }
 
 func TestAsyncRetry_recoverPending_LoadAllError(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 
@@ -516,7 +520,7 @@ func TestAsyncRetry_recoverPending_LoadAllError(t *testing.T) {
 }
 
 func TestAsyncRetry_recoverPending_Empty(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 
@@ -538,7 +542,7 @@ func TestAsyncRetry_recoverPending_NilStore(t *testing.T) {
 }
 
 func TestAsyncRetry_recoverPending_ScheduleError(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 
@@ -593,7 +597,7 @@ func TestAsyncRetry_saramaHeadersToPublic_Empty(t *testing.T) {
 }
 
 func TestNewAsyncRetryEngine_DefaultWorkers(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	engine := newAsyncRetryEngine("test-group", handler, 3,
 		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
 		0, 0, // numWorkers=0, should default to NumCPU
@@ -612,8 +616,7 @@ func TestAsyncRetry_commitWatermark_NoWatermarkStore(t *testing.T) {
 }
 
 func TestAsyncRetry_OnMessageWithHeaders(t *testing.T) {
-	var receivedHeaders []HeaderKV
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 
@@ -635,13 +638,12 @@ func TestAsyncRetry_OnMessageWithHeaders(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	// Headers should be captured via saramaHeadersToPublic
-	_ = receivedHeaders
 
 	engine.ClearSession()
 }
 
 func TestAsyncRetry_OnShutdownWithWatermark(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error { return nil })
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
 	store := NewMemoryRetryStore()
 	engine := newAsyncRetryEngineWithStore("test-group", handler, 3,
 		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
@@ -657,7 +659,7 @@ func TestAsyncRetry_OnShutdownWithWatermark(t *testing.T) {
 }
 
 func TestAsyncRetry_ClearSession_WithWatermarkReset(t *testing.T) {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return errors.New("fail")
 	})
 
@@ -679,6 +681,229 @@ func TestAsyncRetry_ClearSession_WithWatermarkReset(t *testing.T) {
 	// ClearSession should reset partitions
 	engine.ClearSession()
 }
+
+func TestAsyncRetry_redisPollLoopContextCancel(t *testing.T) {
+	// Test that redisPollLoop exits when context is cancelled
+	store := &nonWatermarkMockStore{}
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
+	eng := newAsyncRetryEngineWithStore("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, 1, store, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	eng.wg.Add(1)
+	go func() {
+		eng.redisPollLoop(ctx)
+		close(done)
+	}()
+
+	// Cancel the context
+	cancel()
+
+	select {
+	case <-done:
+		// OK - redisPollLoop exited
+	case <-time.After(3 * time.Second):
+		t.Fatal("redisPollLoop did not exit after context cancel")
+	}
+}
+
+func TestAsyncRetry_watermarkWorkerContextCancel(t *testing.T) {
+	// Test that watermarkWorker exits when context is cancelled
+	store := NewMemoryRetryStore()
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
+	eng := newAsyncRetryEngineWithStore("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, 1, store, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	eng.wg.Add(1)
+	go func() {
+		eng.watermarkWorker(ctx)
+		close(done)
+	}()
+
+	// Cancel the context
+	cancel()
+
+	select {
+	case <-done:
+		// OK - watermarkWorker exited
+	case <-time.After(3 * time.Second):
+		t.Fatal("watermarkWorker did not exit after context cancel")
+	}
+}
+
+func TestAsyncRetry_redisPollLoopFetchError(t *testing.T) {
+	// Test that redisPollLoop handles Fetch errors gracefully
+	store := &fetchErrorStore{}
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
+
+	var buf bytes.Buffer
+	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	eng := newAsyncRetryEngineWithStore("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, 1, store, logger, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	eng.wg.Add(1)
+	go func() {
+		eng.redisPollLoop(ctx)
+		close(done)
+	}()
+
+	// Wait a bit for the poll loop to hit the fetch error
+	time.Sleep(500 * time.Millisecond)
+
+	// Cancel to exit
+	cancel()
+
+	select {
+	case <-done:
+		// OK
+	case <-time.After(3 * time.Second):
+		t.Fatal("redisPollLoop did not exit")
+	}
+
+	// Should have logged the fetch error
+	assert.Contains(t, buf.String(), "fetch pending retries failed")
+}
+
+func TestAsyncRetry_watermarkWorkerWithItem(t *testing.T) {
+	// Test that watermarkWorker processes an available item and exits on context cancel
+	var handlerCalls atomic.Int32
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
+		handlerCalls.Add(1)
+		return nil
+	})
+
+	store := NewMemoryRetryStore()
+	eng := newAsyncRetryEngineWithStore("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, 1, store, nil, nil)
+
+	session := newMockSession()
+	eng.SetSession(session)
+
+	// Schedule a retry item that's already due
+	now := time.Now()
+	item := &RetryItem{
+		Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello"),
+		Attempt: 1, NextRetryAt: now.Add(-time.Second), ConsumerGroup: "test-group",
+	}
+	store.Schedule(context.Background(), item)
+
+	// Wait for the worker to process it
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, int32(1), handlerCalls.Load())
+
+	eng.ClearSession()
+}
+
+func TestAsyncRetry_redisPollLoopWithItem(t *testing.T) {
+	// Test that redisPollLoop picks up items from a non-watermark store
+	var handlerCalls atomic.Int32
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
+		handlerCalls.Add(1)
+		return nil
+	})
+
+	// Use a store that returns items on Fetch
+	store := &fetchReturnItemStore{
+		items: []*RetryItem{
+			{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello"),
+				Attempt: 1, ConsumerGroup: "test-group"},
+		},
+	}
+
+	var buf bytes.Buffer
+	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	eng := newAsyncRetryEngineWithStore("test-group", handler, 1,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, 1, store, logger, nil)
+
+	// Set session so processRetry can get it
+	session := newMockSession()
+	eng.SetSession(session)
+	// But we need a non-watermark engine for redisPollLoop
+	// The store is not a WatermarkStore, so wmStore will be nil
+	assert.Nil(t, eng.wmStore)
+
+	// Wait for the poll loop to pick up the item
+	time.Sleep(500 * time.Millisecond)
+	assert.Equal(t, int32(1), handlerCalls.Load())
+
+	eng.ClearSession()
+}
+
+func TestAsyncRetry_recoverPendingWithLogger(t *testing.T) {
+	// Test recoverPending with a logger that logs recovery
+	var buf bytes.Buffer
+	logger := logutil.NewSlogLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error { return nil })
+
+	store := &mockStoreWithLoadAll{
+		items: []*RetryItem{
+			{Topic: "test", Partition: 0, Offset: 1, Value: []byte("hello"),
+				NextRetryAt: time.Now().Add(-time.Second), ConsumerGroup: "g"},
+		},
+	}
+
+	eng := newAsyncRetryEngineWithStore("test-group", handler, 3,
+		&retry.ExponentialDelay{Base: time.Millisecond, Max: time.Second},
+		0, 1, store, logger, nil)
+
+	eng.recoverPending(context.Background())
+	assert.Contains(t, buf.String(), "recovered pending retries")
+}
+
+// ==================== Additional Mock Types ====================
+
+// fetchErrorStore always returns error on Fetch
+type fetchErrorStore struct{}
+
+func (s *fetchErrorStore) Schedule(_ context.Context, _ *RetryItem) error             { return nil }
+func (s *fetchErrorStore) Fetch(_ context.Context, _ time.Time, _ int) ([]*RetryItem, error) {
+	return nil, errors.New("redis connection error")
+}
+func (s *fetchErrorStore) Remove(_ context.Context, _ *RetryItem) error                { return nil }
+func (s *fetchErrorStore) Reschedule(_ context.Context, _, _ *RetryItem) error         { return nil }
+func (s *fetchErrorStore) LoadAll(_ context.Context) ([]*RetryItem, error)             { return nil, nil }
+func (s *fetchErrorStore) Close() error                                                { return nil }
+
+// fetchReturnItemStore returns items on first Fetch call, then empty
+type fetchReturnItemStore struct {
+	items       []*RetryItem
+	removeCalled atomic.Bool
+	fetchCount  atomic.Int32
+}
+
+func (s *fetchReturnItemStore) Schedule(_ context.Context, _ *RetryItem) error { return nil }
+func (s *fetchReturnItemStore) Fetch(_ context.Context, _ time.Time, _ int) ([]*RetryItem, error) {
+	count := s.fetchCount.Add(1)
+	if count == 1 && len(s.items) > 0 {
+		result := s.items
+		s.items = nil
+		return result, nil
+	}
+	return nil, nil
+}
+func (s *fetchReturnItemStore) Remove(_ context.Context, _ *RetryItem) error {
+	s.removeCalled.Store(true)
+	return nil
+}
+func (s *fetchReturnItemStore) Reschedule(_ context.Context, _, _ *RetryItem) error { return nil }
+func (s *fetchReturnItemStore) LoadAll(_ context.Context) ([]*RetryItem, error)      { return nil, nil }
+func (s *fetchReturnItemStore) Close() error                                         { return nil }
 
 // ==================== Mock 类型 ====================
 
@@ -758,7 +983,7 @@ type testDeadLetterHandler struct {
 	called atomic.Bool
 }
 
-func (h *testDeadLetterHandler) OnDeadLetter(_ context.Context, _ string, _ []byte, _ error) error {
+func (h *testDeadLetterHandler) OnDeadLetter(_ context.Context, _ types.Message, _ error) error {
 	h.called.Store(true)
 	return nil
 }
@@ -766,13 +991,13 @@ func (h *testDeadLetterHandler) OnDeadLetter(_ context.Context, _ string, _ []by
 // failingDeadLetterHandler implements DeadLetterHandler that always fails
 type failingDeadLetterHandler struct{}
 
-func (h *failingDeadLetterHandler) OnDeadLetter(_ context.Context, _ string, _ []byte, _ error) error {
+func (h *failingDeadLetterHandler) OnDeadLetter(_ context.Context, _ types.Message, _ error) error {
 	return errors.New("dead letter failed")
 }
 
 // newTestAsyncRetryEngine 创建测试用异步引擎（无 store）
 func newTestAsyncRetryEngine(t *testing.T, maxRetry int, handlerTimeout time.Duration) *asyncRetryEngine {
-	handler := FuncHandler(func(ctx context.Context, topic string, message []byte) error {
+	handler := types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 		return nil
 	})
 	return newAsyncRetryEngineWithStore("test-group", handler, maxRetry,

@@ -10,6 +10,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gomooth/pkg/framework/retry"
 	"github.com/gomooth/pkg/mq/internal/logutil"
+	"github.com/gomooth/pkg/mq/internal/types"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +23,7 @@ func TestRequeueRetryStrategy_Success(t *testing.T) {
 	client := miniredisClient(t, mr)
 
 	strategy := newRequeueRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return nil
 		}),
 		3,
@@ -45,7 +46,7 @@ func TestRequeueRetryStrategy_RequeueThenSuccess(t *testing.T) {
 
 	var handleAttempts atomic.Int32
 	strategy := newRequeueRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			n := handleAttempts.Add(1)
 			if n < 3 {
 				return errors.New("fail")
@@ -79,7 +80,7 @@ func TestRequeueRetryStrategy_Exhausted(t *testing.T) {
 
 	var failedCalled atomic.Int32
 	strategy := newRequeueRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("always fail")
 		}),
 		0, // maxRetry=0 means no retries, immediate exhaustion
@@ -89,7 +90,7 @@ func TestRequeueRetryStrategy_Exhausted(t *testing.T) {
 		logutil.NewSlogLogger(nilLogger()),
 		nil,
 	)
-	strategy.SetFailedHandler(func(ctx context.Context, queue string, message []byte, err error) {
+	strategy.SetFailedHandler(func(ctx context.Context, msg types.Message, err error) {
 		failedCalled.Add(1)
 	})
 
@@ -111,7 +112,7 @@ func TestRequeueRetryStrategy_ContextCancel(t *testing.T) {
 	client := miniredisClient(t, mr)
 
 	strategy := newRequeueRetryStrategy(
-		FuncHandler(func(ctx context.Context, queue string, message []byte) error {
+		types.FuncHandler(func(ctx context.Context, msg types.Message) error {
 			return errors.New("fail")
 		}),
 		100,

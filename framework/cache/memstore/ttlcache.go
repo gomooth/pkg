@@ -51,7 +51,11 @@ func (s *ttlCacheStore) GetWithTTL(_ context.Context, key any) (any, time.Durati
 	if item == nil || item.IsExpired() {
 		return nil, 0, store.NotFoundWithCause(errors.New("value not found in ttlcache store"))
 	}
-	return item.Value(), item.TTL(), nil
+	remaining := item.ExpiresAt().Sub(time.Now())
+	if remaining < 0 {
+		remaining = 0
+	}
+	return item.Value(), remaining, nil
 }
 
 func (s *ttlCacheStore) Set(ctx context.Context, key any, value any, options ...store.Option) error {
