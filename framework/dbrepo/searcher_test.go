@@ -688,5 +688,34 @@ func TestSearcher_Find_WithOptionBuilders(t *testing.T) {
 	})
 }
 
+func TestSearcher_WithTx(t *testing.T) {
+	db := setupTestDB(t)
+
+	// testFilter is a simple filter for WithTx tests
+	type testFilter struct {
+		Name string
+	}
+
+	searcher, err := NewSearcher[testModel, testFilter](db,
+		WithFilterTransfer[testModel, testFilter](func(f *testFilter, db *gorm.DB) *gorm.DB {
+			return db
+		}),
+	)
+	assert.NoError(t, err)
+
+	t.Run("WithTx returns new searcher with tx db", func(t *testing.T) {
+		tx := db.Begin()
+		defer tx.Rollback()
+
+		txSearcher := searcher.WithTx(tx)
+		assert.NotSame(t, searcher, txSearcher)
+	})
+
+	t.Run("WithTx nil returns self", func(t *testing.T) {
+		result := searcher.WithTx(nil)
+		assert.Same(t, searcher, result)
+	})
+}
+
 // Ensure pager.Sorter and pager.ParseSorts are accessible (compile-time check)
 var _ = pager.ParseSorts

@@ -61,3 +61,16 @@ func WithSelect(selects ...string) findOptionBuilder {
 		opt.selects = append(opt.selects, selects...)
 	}
 }
+
+// WithTx 返回绑定指定事务连接的 Searcher 实例
+func (q *searcher[M, F]) WithTx(tx *gorm.DB) ISearcher[M, F] {
+	if tx == nil {
+		return q
+	}
+	return &searcher[M, F]{
+		db:              tx,
+		filterTransfer:  q.filterTransfer,
+		sortMapping:     q.sortMapping,
+		cursorExtractor: q.cursorExtractor,
+	}
+}

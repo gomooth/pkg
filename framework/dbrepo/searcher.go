@@ -42,6 +42,8 @@ type IAggSearcher[F any] interface {
 type ISearcher[M any, F any] interface {
 	IListSearcher[M, F]
 	IAggSearcher[F]
+	// WithTx 返回绑定指定事务连接的 Searcher 实例
+	WithTx(tx *gorm.DB) ISearcher[M, F]
 }
 
 // searcher 查询构建器，提供通用的查询方法
