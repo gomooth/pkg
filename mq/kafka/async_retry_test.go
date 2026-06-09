@@ -154,8 +154,7 @@ func TestAsyncRetry_OnMessageFail_NoRetry(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, int32(1), calls.Load())
-	// With watermark and exhausted handled, MarkMessage should have been called via commitWatermark
-	// but since wmStore.RemovePending + commitWatermark, offset may be committed
+	// With watermark and exhausted handled, watermarkStrategy.OnExhausted handles commit
 
 	engine.ClearSession()
 }
@@ -607,12 +606,14 @@ func TestNewAsyncRetryEngine_DefaultWorkers(t *testing.T) {
 	assert.GreaterOrEqual(t, engine.numWorkers, 1)
 }
 
-func TestAsyncRetry_commitWatermark_NoWatermarkStore(t *testing.T) {
-	engine := newTestAsyncRetryEngine(t, 0, 0)
+func TestAsyncRetry_commitWatermark_NilWmStore(t *testing.T) {
 	session := newMockSession()
 
-	// Should not panic when wmStore is nil
-	engine.commitWatermark(session, "test", 0)
+	// commitWatermark is now a standalone function; calling with a
+	// WatermarkStore that returns ok=false should not panic.
+	wmStore := NewMemoryRetryStore()
+	commitWatermark(session, "test", 0, wmStore)
+	// No watermark set for this partition, so no MarkOffset call - just verifying no panic
 }
 
 func TestAsyncRetry_OnMessageWithHeaders(t *testing.T) {
@@ -693,9 +694,10 @@ func TestAsyncRetry_redisPollLoopContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
+	dms := eng.strategy.(*directMarkStrategy)
 	eng.wg.Add(1)
 	go func() {
-		eng.redisPollLoop(ctx)
+		dms.redisPollLoop(ctx, &eng.wg, eng.processRetry)
 		close(done)
 	}()
 
@@ -721,9 +723,9 @@ func TestAsyncRetry_watermarkWorkerContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
-	eng.wg.Add(1)
+	ws := eng.strategy.(*watermarkStrategy)
 	go func() {
-		eng.watermarkWorker(ctx)
+		ws.StartWorkers(ctx, &eng.wg, eng.processRetry)
 		close(done)
 	}()
 
@@ -753,9 +755,10 @@ func TestAsyncRetry_redisPollLoopFetchError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
+	dms := eng.strategy.(*directMarkStrategy)
 	eng.wg.Add(1)
 	go func() {
-		eng.redisPollLoop(ctx)
+		dms.redisPollLoop(ctx, &eng.wg, eng.processRetry)
 		close(done)
 	}()
 
@@ -833,9 +836,9 @@ func TestAsyncRetry_redisPollLoopWithItem(t *testing.T) {
 	// Set session so processRetry can get it
 	session := newMockSession()
 	eng.SetSession(session)
-	// But we need a non-watermark engine for redisPollLoop
-	// The store is not a WatermarkStore, so wmStore will be nil
-	assert.Nil(t, eng.wmStore)
+	// The store is not a WatermarkStore, so strategy should be directMarkStrategy
+	_, ok := eng.strategy.(*directMarkStrategy)
+	assert.True(t, ok)
 
 	// Wait for the poll loop to pick up the item
 	time.Sleep(500 * time.Millisecond)

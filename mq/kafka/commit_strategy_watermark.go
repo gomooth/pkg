@@ -9,6 +9,12 @@ import (
 	"github.com/gomooth/pkg/mq/internal/logutil"
 )
 
+// topicPartition 用于 watermarkStrategy 中 trackedParts map 的 key
+type topicPartition struct {
+	topic     string
+	partition int32
+}
+
 // watermarkStrategy 水位线模式的 CommitStrategy 实现。
 // 替代 asyncRetryEngine 中 wmStore != nil 的所有分支逻辑。
 type watermarkStrategy struct {

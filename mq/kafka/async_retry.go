@@ -19,12 +19,6 @@ var _ retryStrategy = (*asyncRetryEngine)(nil)
 
 const defaultMaxRetryQueueSize = 10000
 
-// topicPartition 用于 trackedParts map 的 key
-type topicPartition struct {
-	topic     string
-	partition int32
-}
-
 // asyncRetryEngine 统一异步重试引擎
 type asyncRetryEngine struct {
 	// 配置
@@ -36,12 +30,10 @@ type asyncRetryEngine struct {
 	numWorkers     int
 
 	// 存储
-	store   RetryStore     // MemoryRetryStore 或 RedisRetryStore
-	wmStore WatermarkStore // 非 nil 时为水位线模式
+	store RetryStore // MemoryRetryStore 或 RedisRetryStore
 
-	// 当前跟踪的 partition 集合（用于 ClearSession 时 ResetPartition）
-	trackedParts map[topicPartition]bool
-	tpMu         sync.Mutex
+	// 提交策略
+	strategy CommitStrategy
 
 	// 生命周期（替代 shutdown channel，修复 P1）
 	state      atomic.Int32
@@ -88,7 +80,6 @@ func newAsyncRetryEngine(
 		backoff:        backoff,
 		handlerTimeout: handlerTimeout,
 		numWorkers:     numWorkers,
-		trackedParts:   make(map[topicPartition]bool),
 		logger:         logger,
 		metrics:        metrics,
 	}
@@ -107,9 +98,11 @@ func newAsyncRetryEngineWithStore(
 ) *asyncRetryEngine {
 	engine := newAsyncRetryEngine(cg, handler, maxRetry, backoff, handlerTimeout, numWorkers, logger, metrics)
 	engine.store = store
-	// 检查是否为水位线模式
+	// 根据存储类型选择提交策略
 	if wmStore, ok := store.(WatermarkStore); ok {
-		engine.wmStore = wmStore
+		engine.strategy = newWatermarkStrategy(wmStore, engine.logger)
+	} else {
+		engine.strategy = newDirectMarkStrategy(store, engine.logger)
 	}
 	return engine
 }
@@ -136,7 +129,7 @@ func (e *asyncRetryEngine) SetSession(session sarama.ConsumerGroupSession) {
 	e.startWorkers(ctx)
 
 	// Redis 模式：恢复 pending
-	if e.store != nil && e.wmStore == nil {
+	if _, ok := e.strategy.(*directMarkStrategy); ok && e.store != nil {
 		e.wg.Add(1) // 修复 P7：recoverPending 加入 wg
 		go func() {
 			defer e.wg.Done()
@@ -152,15 +145,8 @@ func (e *asyncRetryEngine) ClearSession() {
 	}
 	e.wg.Wait()
 
-	// 修复 P4：水位线模式下重置所有跟踪的 partition
-	if e.wmStore != nil {
-		e.tpMu.Lock()
-		for tp := range e.trackedParts {
-			e.wmStore.ResetPartition(tp.topic, tp.partition)
-		}
-		e.trackedParts = make(map[topicPartition]bool)
-		e.tpMu.Unlock()
-	}
+	// 修复 P4：提交策略清理
+	e.strategy.OnClearSession()
 
 	e.sessionMu.Lock()
 	e.session = nil
@@ -176,13 +162,8 @@ func (e *asyncRetryEngine) OnShutdown(shutdownCtx context.Context) {
 		e.cancelFunc() // 幂等！不会 panic（修复 P1）
 	}
 
-	// 通知 wmStore 的等待 goroutine
-	if e.wmStore != nil {
-		select {
-		case e.wmStore.Notify() <- struct{}{}:
-		default:
-		}
-	}
+	// 通知提交策略的等待 goroutine
+	e.strategy.OnShutdown(shutdownCtx)
 
 	done := make(chan struct{})
 	go func() {
@@ -212,10 +193,8 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 	err := e.handler.Handle(msgCtx, kafkaMsg)
 
 	if err == nil {
-		if e.wmStore != nil {
-			e.wmStore.MarkSuccess(msg.Topic, msg.Partition, msg.Offset)
-			e.commitWatermark(session, msg.Topic, msg.Partition)
-		} else {
+		e.strategy.OnSuccess(ctx, session, &RetryItem{Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset})
+		if _, ok := e.strategy.(*directMarkStrategy); ok {
 			session.MarkMessage(msg, "")
 		}
 		if e.metrics != nil {
@@ -229,10 +208,8 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 		result := handleExhausted(ctx, e.consumerGroup, msg.Topic, msg.Value, err,
 			e.deadLetter, e.failedHandler, e.logger, e.metrics)
 		if result == exhaustedHandled {
-			if e.wmStore != nil {
-				e.wmStore.RemovePending(msg.Topic, msg.Partition, msg.Offset)
-				e.commitWatermark(session, msg.Topic, msg.Partition)
-			} else {
+			e.strategy.OnExhausted(ctx, session, &RetryItem{Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset})
+			if _, ok := e.strategy.(*directMarkStrategy); ok {
 				session.MarkMessage(msg, "")
 			}
 		}
@@ -240,9 +217,9 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 	}
 
 	// 记录跟踪的 partition
-	e.tpMu.Lock()
-	e.trackedParts[topicPartition{topic: msg.Topic, partition: msg.Partition}] = true
-	e.tpMu.Unlock()
+	if ws, ok := e.strategy.(*watermarkStrategy); ok {
+		ws.trackPartition(msg.Topic, msg.Partition)
+	}
 
 	if e.metrics != nil {
 		e.metrics.OnRetry()
@@ -273,9 +250,8 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 		result := handleExhausted(ctx, e.consumerGroup, msg.Topic, msg.Value, err,
 			e.deadLetter, e.failedHandler, e.logger, e.metrics)
 		if result == exhaustedHandled {
-			if e.wmStore != nil {
-				e.commitWatermark(session, msg.Topic, msg.Partition)
-			} else {
+			e.strategy.OnScheduleFailed(ctx, session, &RetryItem{Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset})
+			if _, ok := e.strategy.(*directMarkStrategy); ok {
 				session.MarkMessage(msg, "")
 			}
 		}
@@ -283,7 +259,7 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 	}
 
 	// Redis 模式：持久化成功即可提交 offset
-	if e.wmStore == nil {
+	if _, ok := e.strategy.(*directMarkStrategy); ok {
 		session.MarkMessage(msg, "")
 	}
 }
@@ -296,120 +272,10 @@ func (e *asyncRetryEngine) applyHandlerTimeout(ctx context.Context) (context.Con
 	return ctx, func() {}
 }
 
-// commitWatermark 提交水位线以内的 offset
-func (e *asyncRetryEngine) commitWatermark(session sarama.ConsumerGroupSession, topic string, partition int32) {
-	if e.wmStore == nil {
-		return
-	}
-	wm, ok := e.wmStore.Watermark(topic, partition)
-	if ok {
-		session.MarkOffset(topic, partition, wm+1, "")
-	}
-}
-
 // startWorkers 启动 worker 协程
 func (e *asyncRetryEngine) startWorkers(ctx context.Context) {
 	for i := 0; i < e.numWorkers; i++ {
-		e.wg.Add(1)
-		if e.wmStore != nil {
-			go e.watermarkWorker(ctx)
-		} else {
-			go e.redisPollLoop(ctx)
-		}
-	}
-}
-
-// watermarkWorker 水位线模式的 worker
-func (e *asyncRetryEngine) watermarkWorker(ctx context.Context) {
-	defer e.wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			if e.logger != nil {
-				e.logger.Error("watermarkWorker panic recovered", "panic", r)
-			}
-		}
-	}()
-
-	for {
-		item, err := e.waitForWatermarkItem(ctx)
-		if item == nil {
-			return
-		}
-		if err != nil {
-			continue
-		}
-
-		e.processRetry(ctx, item)
-	}
-}
-
-// waitForWatermarkItem 从 MemoryRetryStore 等待到期项
-func (e *asyncRetryEngine) waitForWatermarkItem(ctx context.Context) (*RetryItem, error) {
-	notifyCh := e.wmStore.Notify()
-	for {
-		items, err := e.store.Fetch(ctx, time.Now(), 1)
-		if err != nil {
-			return nil, err
-		}
-		if len(items) > 0 {
-			return items[0], nil
-		}
-
-		// 等待通知或退出
-		select {
-		case <-notifyCh:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-}
-
-// redisPollLoop Redis 模式的轮询 worker
-func (e *asyncRetryEngine) redisPollLoop(ctx context.Context) {
-	defer e.wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			if e.logger != nil {
-				e.logger.Error("redisPollLoop panic recovered", "panic", r)
-			}
-		}
-	}()
-
-	const (
-		minInterval   = 200 * time.Millisecond
-		maxInterval   = 5 * time.Second
-		backoffFactor = 2.0
-	)
-
-	interval := minInterval
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			items, err := e.store.Fetch(ctx, time.Now(), 10)
-			if err != nil {
-				if e.logger != nil {
-					e.logger.Error("fetch pending retries failed", "error", err)
-				}
-				continue
-			}
-			if len(items) > 0 {
-				interval = minInterval
-				for _, item := range items {
-					e.processRetry(ctx, item)
-				}
-			} else {
-				interval = time.Duration(float64(interval) * backoffFactor)
-				if interval > maxInterval {
-					interval = maxInterval
-				}
-			}
-			ticker.Reset(interval)
-		}
+		e.strategy.StartWorkers(ctx, &e.wg, e.processRetry)
 	}
 }
 
@@ -423,15 +289,17 @@ func (e *asyncRetryEngine) processRetry(ctx context.Context, item *RetryItem) {
 
 	if err == nil {
 		// 重试成功
-		if e.wmStore != nil {
-			e.wmStore.MarkSuccess(item.Topic, item.Partition, item.Offset)
-			session := e.getSession()
-			if session != nil {
-				e.commitWatermark(session, item.Topic, item.Partition)
-			}
+		if ws, ok := e.strategy.(*watermarkStrategy); ok {
+			ws.OnSuccess(ctx, e.getSession(), item)
 		} else {
-			// Redis 模式：从 store 移除
 			e.store.Remove(ctx, item)
+			if session := e.getSession(); session != nil {
+				session.MarkMessage(&sarama.ConsumerMessage{
+					Topic:     item.Topic,
+					Partition: item.Partition,
+					Offset:    item.Offset,
+				}, "")
+			}
 		}
 		if e.metrics != nil {
 			e.metrics.OnConsume()
@@ -467,12 +335,8 @@ func (e *asyncRetryEngine) processRetry(ctx context.Context, item *RetryItem) {
 	result := handleExhausted(ctx, e.consumerGroup, item.Topic, item.Value, err,
 		e.deadLetter, e.failedHandler, e.logger, e.metrics)
 	if result == exhaustedHandled {
-		if e.wmStore != nil {
-			e.wmStore.RemovePending(item.Topic, item.Partition, item.Offset)
-			session := e.getSession()
-			if session != nil {
-				e.commitWatermark(session, item.Topic, item.Partition)
-			}
+		if ws, ok := e.strategy.(*watermarkStrategy); ok {
+			ws.OnExhausted(ctx, e.getSession(), item)
 		} else {
 			e.store.Remove(ctx, item)
 		}
