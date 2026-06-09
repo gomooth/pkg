@@ -20,7 +20,7 @@ go mod tidy                      # 整理依赖
 ## 关键约定
 
 - **Go 版本**: 1.25.0
-- **选项模式**: 配置统一用 `func(*Option)` 选项函数，命名 `WithXxx`
+- **选项模式**: 配置统一使用间接风格 `func(*optionStruct)` 选项函数，选项修改中间配置结构体，在构造函数中映射到目标。中间配置结构体命名 `{target}Option`（如 `cacheOption`、`searcherOption`）。`internal` 包不受此约束。命名 `WithXxx`
 - **接口优先**: 公开 API 返回接口（如 `IDAO[T]`、`ICache`），便于 mock 和扩展
 - **internal/**: 实现细节放 internal，不对外暴露
 - **错误处理**: `github.com/gomooth/xerror` 包装错误，`framework/dberror` 处理数据库错误码
@@ -53,3 +53,4 @@ go mod tidy                      # 整理依赖
 ## 开发规范
 
 1. 提交 git 时，必须严格遵守 .gitignore 文件约定
+2. 选项模式统一使用间接风格（`func(*optionStruct)`），不使用直接风格（`func(*targetStruct)`）。`internal` 包不受此约束

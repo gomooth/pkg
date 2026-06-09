@@ -5,27 +5,34 @@ import (
 	"gorm.io/gorm"
 )
 
+// searcherOption Searcher 选项的中间结构体
+type searcherOption[M any, F any] struct {
+	filterTransfer  func(*F, *gorm.DB) *gorm.DB
+	sortMapping     *dbquery.SortMapping
+	cursorExtractor func(*M) string
+}
+
 // SearcherOption searcher 构造选项
-type SearcherOption[M any, F any] func(*searcher[M, F])
+type SearcherOption[M any, F any] func(*searcherOption[M, F])
 
 // WithFilterTransfer 设置过滤条件转换函数
 func WithFilterTransfer[M any, F any](transfer func(f *F, db *gorm.DB) *gorm.DB) SearcherOption[M, F] {
-	return func(s *searcher[M, F]) {
-		s.filterTransfer = transfer
+	return func(o *searcherOption[M, F]) {
+		o.filterTransfer = transfer
 	}
 }
 
 // WithSortMapping 设置排序字段映射，替代旧的 WithSortKeyMap
 func WithSortMapping[M any, F any](m *dbquery.SortMapping) SearcherOption[M, F] {
-	return func(s *searcher[M, F]) {
-		s.sortMapping = m
+	return func(o *searcherOption[M, F]) {
+		o.sortMapping = m
 	}
 }
 
 // WithCursorExtractor 设置游标值提取函数，用于 ListByCursor 从最后一条记录提取下一页游标
 func WithCursorExtractor[M any, F any](fn func(*M) string) SearcherOption[M, F] {
-	return func(s *searcher[M, F]) {
-		s.cursorExtractor = fn
+	return func(o *searcherOption[M, F]) {
+		o.cursorExtractor = fn
 	}
 }
 

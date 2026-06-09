@@ -22,13 +22,18 @@ type cronJobWrapper struct {
 
 // NewCronJobWrapper 创建定时任务包装器，通过选项函数配置重试、超时、日志等
 func NewCronJobWrapper(opts ...WrapperOption) IWrapper {
-	w := &cronJobWrapper{}
-
+	cnf := &cronJobWrapperOption{}
 	for _, opt := range opts {
-		opt(w)
+		opt(cnf)
 	}
 
-	return w
+	return &cronJobWrapper{
+		maxRetry:     cnf.maxRetry,
+		timeout:      cnf.timeout,
+		panicHandler: cnf.panicHandler,
+		failedSaver:  cnf.failedSaver,
+		log:          cnf.log,
+	}
 }
 
 // FromCommandJob 将 ICommandJob 转换为 cron.Job，支持重试和超时控制

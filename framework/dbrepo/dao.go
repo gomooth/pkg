@@ -18,13 +18,13 @@ var (
 	dbRepoOperationDuration metric.Float64Histogram
 )
 
-// daoOptionTarget DAO 选项的内部接口
-type daoOptionTarget interface {
-	setBatchSize(int)
+// daoOption DAO 选项的中间结构体
+type daoOption struct {
+	batchSize int
 }
 
 // DAOOption DAO 选项函数（非泛型）
-type DAOOption func(daoOptionTarget)
+type DAOOption func(*daoOption)
 
 func init() {
 	telemetry.OnProviderSet(func() {
@@ -79,12 +79,6 @@ type dao[T any] struct {
 
 var _ IDAO[struct{}] = (*dao[struct{}])(nil)
 
-func (d *dao[T]) setBatchSize(size int) {
-	if size > 0 {
-		d.batchSize = size
-	}
-}
-
 // NewDAO 创建DAO实例
 // db 不能为 nil，否则返回错误
 // opts 可选配置，如 WithBatchSize 设置批量创建时的批次大小
@@ -92,17 +86,19 @@ func NewDAO[T any](db *gorm.DB, opts ...DAOOption) (IDAO[T], error) {
 	if db == nil {
 		return nil, xerror.New("dbrepo: NewDAO called with nil *gorm.DB")
 	}
-	d := &dao[T]{db: db, batchSize: 100}
+	cnf := &daoOption{batchSize: 100}
 	for _, opt := range opts {
-		opt(d)
+		opt(cnf)
 	}
-	return d, nil
+	return &dao[T]{db: db, batchSize: cnf.batchSize}, nil
 }
 
 // WithBatchSize 设置批量创建时的批次大小
 func WithBatchSize(size int) DAOOption {
-	return func(t daoOptionTarget) {
-		t.setBatchSize(size)
+	return func(o *daoOption) {
+		if size > 0 {
+			o.batchSize = size
+		}
 	}
 }
 

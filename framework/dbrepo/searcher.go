@@ -61,16 +61,19 @@ func NewSearcher[M any, F any](db *gorm.DB, opts ...SearcherOption[M, F]) (ISear
 		return nil, xerror.New("dbrepo: NewSearcher called with nil *gorm.DB")
 	}
 
-	s := &searcher[M, F]{
-		db:          db,
+	cnf := &searcherOption[M, F]{
 		sortMapping: dbquery.NewSortMapping(),
 	}
-
 	for _, opt := range opts {
-		opt(s)
+		opt(cnf)
 	}
 
-	return s, nil
+	return &searcher[M, F]{
+		db:              db,
+		filterTransfer:  cnf.filterTransfer,
+		sortMapping:     cnf.sortMapping,
+		cursorExtractor: cnf.cursorExtractor,
+	}, nil
 }
 
 // buildQuery 构建 GORM 查询

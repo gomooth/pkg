@@ -50,14 +50,14 @@ func getDefaultExpire() time.Duration {
 }
 
 // Option 缓存配置选项
-type Option[T any] func(*anyCache[T])
+type Option[T any] func(*cacheOption[T])
 
 // WithMaxItems 设置缓存最大条目数，超过后新 key 的 Set 将返回错误（已有 key 更新不受限）
 // 需配合 WithItemCountFunc 使用以提供条目计数能力
 func WithMaxItems[T any](n int) Option[T] {
-	return func(c *anyCache[T]) {
+	return func(o *cacheOption[T]) {
 		if n > 0 {
-			c.maxItems = n
+			o.maxItems = n
 		}
 	}
 }
@@ -65,27 +65,35 @@ func WithMaxItems[T any](n int) Option[T] {
 // WithItemCountFunc 设置获取当前缓存条目数的函数
 // 通常传入底层 go-cache 实例的 ItemCount 方法
 func WithItemCountFunc[T any](fn func() int) Option[T] {
-	return func(c *anyCache[T]) {
-		c.itemCountFunc = fn
+	return func(o *cacheOption[T]) {
+		o.itemCountFunc = fn
 	}
 }
 
 // WithAutoRenew 设置是否自动续期，默认为 true。
 // 当缓存命中且剩余 TTL 低于阈值时，自动延长缓存有效期，防止热点 key 过期瞬间的缓存击穿。
 func WithAutoRenew[T any](enabled bool) Option[T] {
-	return func(c *anyCache[T]) {
-		c.autoRenew = enabled
+	return func(o *cacheOption[T]) {
+		o.autoRenew = enabled
 	}
 }
 
 // WithRenewThreshold 设置自动续期阈值比例，默认 0.2。
 // 当剩余 TTL <= expire * threshold 时触发续期。仅在 autoRenew 为 true 时生效。
 func WithRenewThreshold[T any](threshold float64) Option[T] {
-	return func(c *anyCache[T]) {
+	return func(o *cacheOption[T]) {
 		if threshold > 0 && threshold < 1 {
-			c.renewThreshold = threshold
+			o.renewThreshold = threshold
 		}
 	}
+}
+
+// cacheOption 缓存配置选项的中间结构体
+type cacheOption[T any] struct {
+	maxItems       int
+	itemCountFunc  func() int
+	autoRenew      bool
+	renewThreshold float64
 }
 
 type anyCache[T any] struct {
@@ -103,18 +111,23 @@ var _ ICache[any] = (*anyCache[any])(nil)
 
 // New 创建缓存实例，nameSpace 为命名空间用于 key 前缀隔离，cacheManager 为底层 gocache 管理器
 func New[T any](nameSpace string, cacheManager *cache.Cache[T], opts ...Option[T]) ICache[T] {
-	c := &anyCache[T]{
-		name:           nameSpace,
-		cacheManager:   cacheManager,
+	cnf := &cacheOption[T]{
 		autoRenew:      true,
 		renewThreshold: 0.2,
 	}
 
 	for _, opt := range opts {
-		opt(c)
+		opt(cnf)
 	}
 
-	return c
+	return &anyCache[T]{
+		name:           nameSpace,
+		cacheManager:   cacheManager,
+		autoRenew:      cnf.autoRenew,
+		renewThreshold: cnf.renewThreshold,
+		maxItems:       cnf.maxItems,
+		itemCountFunc:  cnf.itemCountFunc,
+	}
 }
 
 func (c *anyCache[T]) getKey(key string) string {
