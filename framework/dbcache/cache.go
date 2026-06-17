@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"time"
 	"unsafe"
 
@@ -20,7 +21,9 @@ import (
 	"github.com/gomooth/xerror/xcode"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -37,6 +40,9 @@ type dbCache[E, F any] struct {
 	errorCacheTTL  time.Duration // 错误结果缓存时间，0 表示不缓存错误
 	single         singleflight.Group  // 按 name 前缀隔离，不同 dbCache 实例不会碰撞
 	renewSingle    singleflight.Group // 续期去重，防止并发续期风暴
+	tracer         trace.Tracer
+	modelName      string
+	traceConfig    *traceConfig
 }
 
 // errorCacheKeySuffix 错误占位值的缓存键后缀，与正常数据完全隔离
@@ -77,6 +83,33 @@ func recordDBCacheDuration(ctx context.Context, namespace, operation string, dur
 	dbCacheOperationDuration.Record(ctx, dur.Seconds(), attrs)
 }
 
+// startDBCacheMethodSpan 创建 dbcache 方法级 OTel Span
+func startDBCacheMethodSpan[E, F any](ctx context.Context, s *dbCache[E, F], operation string) (context.Context, trace.Span) {
+	if s.traceConfig == nil || !s.traceConfig.methodSpan {
+		return ctx, nil
+	}
+	ctx, span := s.tracer.Start(ctx, "dbcache."+operation,
+		trace.WithAttributes(
+			attribute.String("db.operation", operation),
+			attribute.String("db.model", s.modelName),
+		),
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+	return ctx, span
+}
+
+// finishSpan 完成 Span，记录错误（如有）
+func finishSpan(span trace.Span, err error) {
+	if span == nil {
+		return
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
+}
+
 // New 创建数据库缓存实例。
 //
 // 默认使用 JSON 编解码器，可通过 WithCodec 选项替换为 msgpack 或 gob 等更高效的实现。
@@ -93,6 +126,11 @@ func New[E, F any](name string, cacheManager *cache.Cache[string], opts ...func(
 		opt(cnf)
 	}
 
+	tc := cnf.traceConfig
+	if tc == nil {
+		tc = &traceConfig{methodSpan: true, buildSpan: false}
+	}
+
 	return &dbCache[E, F]{
 		name:           name,
 		cacheManager:   cacheManager,
@@ -101,6 +139,9 @@ func New[E, F any](name string, cacheManager *cache.Cache[string], opts ...func(
 		renewThreshold: cnf.renewThreshold,
 		codec:          cnf.codec,
 		errorCacheTTL:  cnf.errorCacheTTL,
+		tracer:         telemetry.Tracer("dbcache"),
+		modelName:      reflect.TypeOf(new(E)).Elem().Name(),
+		traceConfig:    tc,
 	}
 }
 
@@ -128,6 +169,18 @@ func (s *dbCache[E, F]) cacheQuery(
 	ctx context.Context, key string, tags []string,
 	fill func(ctx context.Context) (*queryResult[E], error),
 ) (*queryResult[E], error) {
+	if s.traceConfig != nil && s.traceConfig.buildSpan {
+		var buildSpan trace.Span
+		ctx, buildSpan = s.tracer.Start(ctx, "dbcache.buildQuery",
+			trace.WithAttributes(
+				attribute.String("db.operation", "build_query"),
+				attribute.String("db.model", s.modelName),
+			),
+			trace.WithSpanKind(trace.SpanKindInternal),
+		)
+		defer buildSpan.End()
+	}
+
 	cacheData, err := s.remember(ctx, key, tags, func(ctx context.Context) ([]byte, error) {
 		res, err := fill(ctx)
 		if err != nil {
@@ -150,6 +203,11 @@ func (s *dbCache[E, F]) cacheQuery(
 func (s *dbCache[E, F]) Paginate(ctx context.Context, q dbquery.IQuery[F],
 	query func(ctx context.Context) ([]*E, uint, error),
 ) (records []*E, total uint, err error) {
+	ctx, span := startDBCacheMethodSpan[E, F](ctx, s, "paginate")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "paginate", time.Since(start), err)
@@ -180,6 +238,11 @@ func (s *dbCache[E, F]) Paginate(ctx context.Context, q dbquery.IQuery[F],
 func (s *dbCache[E, F]) List(ctx context.Context, q dbquery.IQuery[F],
 	query func(ctx context.Context) ([]*E, error),
 ) (records []*E, err error) {
+	ctx, span := startDBCacheMethodSpan[E, F](ctx, s, "list")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "list", time.Since(start), err)
@@ -206,6 +269,11 @@ func (s *dbCache[E, F]) List(ctx context.Context, q dbquery.IQuery[F],
 }
 
 func (s *dbCache[E, F]) First(ctx context.Context, id uint, query func(ctx context.Context) (*E, error)) (record *E, err error) {
+	ctx, span := startDBCacheMethodSpan[E, F](ctx, s, "first")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "first", time.Since(start), err)
@@ -235,6 +303,11 @@ func (s *dbCache[E, F]) First(ctx context.Context, id uint, query func(ctx conte
 }
 
 func (s *dbCache[E, F]) Clear(ctx context.Context, opts ...func(*clearOption)) (err error) {
+	ctx, span := startDBCacheMethodSpan[E, F](ctx, s, "clear")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "clear", time.Since(start), err)
@@ -291,6 +364,11 @@ func (s *dbCache[E, F]) Clear(ctx context.Context, opts ...func(*clearOption)) (
 }
 
 func (s *dbCache[E, F]) Remember(ctx context.Context, key string, query func(ctx context.Context) ([]byte, error)) (result []byte, err error) {
+	ctx, span := startDBCacheMethodSpan[E, F](ctx, s, "remember")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "remember", time.Since(start), err)
@@ -449,6 +527,11 @@ func (s *dbCache[E, F]) tag(tag string) string {
 }
 
 func (s *dbCache[E, F]) Forget(ctx context.Context, key string) (err error) {
+	ctx, span := startDBCacheMethodSpan[E, F](ctx, s, "forget")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBCacheDuration(ctx, s.name, "forget", time.Since(start), err)

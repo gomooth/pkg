@@ -1,7 +1,11 @@
 package dbrepo
 
 import (
+	"context"
+
 	"github.com/gomooth/pkg/framework/dbquery"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 )
 
@@ -10,6 +14,7 @@ type searcherOption[M any, F any] struct {
 	filterTransfer  func(*F, *gorm.DB) *gorm.DB
 	sortMapping     *dbquery.SortMapping
 	cursorExtractor func(*M) string
+	traceConfig     *traceConfig
 }
 
 // SearcherOption searcher 构造选项
@@ -34,6 +39,41 @@ func WithCursorExtractor[M any, F any](fn func(*M) string) SearcherOption[M, F] 
 	return func(o *searcherOption[M, F]) {
 		o.cursorExtractor = fn
 	}
+}
+
+// WithSearcherTraceMethodSpan 开启方法级 OTel Span（默认已开启，此选项用于显式控制）
+func WithSearcherTraceMethodSpan[M, F any]() SearcherOption[M, F] {
+	return func(o *searcherOption[M, F]) {
+		if o.traceConfig == nil {
+			o.traceConfig = &traceConfig{methodSpan: true, buildSpan: false}
+		}
+		o.traceConfig.methodSpan = true
+	}
+}
+
+// WithSearcherTraceBuildSpan 开启构建级 OTel Span（隐含同时开启方法级 Span）
+func WithSearcherTraceBuildSpan[M, F any]() SearcherOption[M, F] {
+	return func(o *searcherOption[M, F]) {
+		if o.traceConfig == nil {
+			o.traceConfig = &traceConfig{methodSpan: true, buildSpan: true}
+		}
+		o.traceConfig.buildSpan = true
+	}
+}
+
+// startSearcherMethodSpan 创建 searcher 方法级 OTel Span
+func startSearcherMethodSpan[M, F any](ctx context.Context, s *searcher[M, F], operation string) (context.Context, trace.Span) {
+	if s.traceConfig == nil || !s.traceConfig.methodSpan {
+		return ctx, nil
+	}
+	ctx, span := s.tracer.Start(ctx, "dbrepo.searcher."+operation,
+		trace.WithAttributes(
+			attribute.String("db.operation", operation),
+			attribute.String("db.model", s.modelName),
+		),
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+	return ctx, span
 }
 
 type findOption struct {
@@ -72,5 +112,8 @@ func (q *searcher[M, F]) WithTx(tx *gorm.DB) ISearcher[M, F] {
 		filterTransfer:  q.filterTransfer,
 		sortMapping:     q.sortMapping,
 		cursorExtractor: q.cursorExtractor,
+		tracer:          q.tracer,
+		modelName:       q.modelName,
+		traceConfig:     q.traceConfig,
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -12,7 +13,9 @@ import (
 	"github.com/eko/gocache/lib/v4/cache"
 	"github.com/eko/gocache/lib/v4/store"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/gomooth/pkg/framework/telemetry"
 	pkgxcode "github.com/gomooth/pkg/framework/xcode"
@@ -43,6 +46,33 @@ func init() {
 		cacheSetCounter, _ = m.Int64Counter("cache.core.set")
 		cacheEvictCounter, _ = m.Int64Counter("cache.core.evict")
 	})
+}
+
+// startCacheMethodSpan 创建 cache 方法级 OTel Span
+func startCacheMethodSpan[T any](ctx context.Context, c *anyCache[T], operation string) (context.Context, trace.Span) {
+	if c.traceConfig == nil || !c.traceConfig.methodSpan {
+		return ctx, nil
+	}
+	ctx, span := c.tracer.Start(ctx, "cache."+operation,
+		trace.WithAttributes(
+			attribute.String("cache.operation", operation),
+			attribute.String("cache.namespace", c.name),
+		),
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+	return ctx, span
+}
+
+// finishSpan 完成 Span，记录错误（如有）
+func finishSpan(span trace.Span, err error) {
+	if span == nil {
+		return
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
 }
 
 func getDefaultExpire() time.Duration {
@@ -94,6 +124,33 @@ type cacheOption[T any] struct {
 	itemCountFunc  func() int
 	autoRenew      bool
 	renewThreshold float64
+	traceConfig    *traceConfig // OTel Span 配置
+}
+
+// traceConfig OTel Span 配置
+type traceConfig struct {
+	methodSpan bool // 方法级 Span，默认 true
+	buildSpan  bool // 构建级 Span，默认 false
+}
+
+// WithCacheTraceMethodSpan 开启方法级 OTel Span（默认已开启）
+func WithCacheTraceMethodSpan[T any]() Option[T] {
+	return func(o *cacheOption[T]) {
+		if o.traceConfig == nil {
+			o.traceConfig = &traceConfig{methodSpan: true, buildSpan: false}
+		}
+		o.traceConfig.methodSpan = true
+	}
+}
+
+// WithCacheTraceBuildSpan 开启构建级 OTel Span（隐含同时开启方法级 Span）
+func WithCacheTraceBuildSpan[T any]() Option[T] {
+	return func(o *cacheOption[T]) {
+		if o.traceConfig == nil {
+			o.traceConfig = &traceConfig{methodSpan: true, buildSpan: true}
+		}
+		o.traceConfig.buildSpan = true
+	}
 }
 
 type anyCache[T any] struct {
@@ -105,6 +162,9 @@ type anyCache[T any] struct {
 	itemCountFunc  func() int
 	autoRenew      bool
 	renewThreshold float64
+	tracer         trace.Tracer
+	modelName      string
+	traceConfig    *traceConfig
 }
 
 var _ ICache[any] = (*anyCache[any])(nil)
@@ -120,6 +180,11 @@ func New[T any](nameSpace string, cacheManager *cache.Cache[T], opts ...Option[T
 		opt(cnf)
 	}
 
+	tc := cnf.traceConfig
+	if tc == nil {
+		tc = &traceConfig{methodSpan: true, buildSpan: false}
+	}
+
 	return &anyCache[T]{
 		name:           nameSpace,
 		cacheManager:   cacheManager,
@@ -127,6 +192,9 @@ func New[T any](nameSpace string, cacheManager *cache.Cache[T], opts ...Option[T
 		renewThreshold: cnf.renewThreshold,
 		maxItems:       cnf.maxItems,
 		itemCountFunc:  cnf.itemCountFunc,
+		tracer:         telemetry.Tracer("cache"),
+		modelName:      reflect.TypeOf(new(T)).Elem().Name(),
+		traceConfig:    tc,
 	}
 }
 
@@ -134,7 +202,12 @@ func (c *anyCache[T]) getKey(key string) string {
 	return fmt.Sprintf("%s:%s", strutil.Camel(c.name), key)
 }
 
-func (c *anyCache[T]) Get(ctx context.Context, key string) (*T, time.Duration, error) {
+func (c *anyCache[T]) Get(ctx context.Context, key string) (_ *T, _ time.Duration, err error) {
+	ctx, span := startCacheMethodSpan[T](ctx, c, "get")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	if c.cacheManager == nil {
 		return nil, 0, xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
@@ -154,7 +227,12 @@ func (c *anyCache[T]) Get(ctx context.Context, key string) (*T, time.Duration, e
 	return nil, 0, err
 }
 
-func (c *anyCache[T]) GetAndDelete(ctx context.Context, key string) (*T, error) {
+func (c *anyCache[T]) GetAndDelete(ctx context.Context, key string) (_ *T, err error) {
+	ctx, span := startCacheMethodSpan[T](ctx, c, "get_and_delete")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	if c.cacheManager == nil {
 		return nil, xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
@@ -172,7 +250,12 @@ func (c *anyCache[T]) GetAndDelete(ctx context.Context, key string) (*T, error) 
 	return nil, err
 }
 
-func (c *anyCache[T]) Set(ctx context.Context, key string, val *T, expire time.Duration) error {
+func (c *anyCache[T]) Set(ctx context.Context, key string, val *T, expire time.Duration) (err error) {
+	ctx, span := startCacheMethodSpan[T](ctx, c, "set")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	if c.cacheManager == nil {
 		return xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
@@ -218,7 +301,12 @@ func (c *anyCache[T]) Remember(
 	key string,
 	expire time.Duration,
 	fun func(ctx context.Context) (*T, error),
-) (*T, error) {
+) (_ *T, err error) {
+	ctx, span := startCacheMethodSpan[T](ctx, c, "remember")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	if c.cacheManager == nil {
 		return nil, xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}
@@ -278,7 +366,12 @@ func (c *anyCache[T]) Remember(
 	return data, nil
 }
 
-func (c *anyCache[T]) Clear(ctx context.Context, key string) error {
+func (c *anyCache[T]) Clear(ctx context.Context, key string) (err error) {
+	ctx, span := startCacheMethodSpan[T](ctx, c, "clear")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	if c.cacheManager == nil {
 		return xerror.NewXCode(pkgxcode.ErrCacheNotInitialized, "cache: manager not initialized")
 	}

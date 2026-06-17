@@ -3,12 +3,16 @@ package dbrepo
 import (
 	"context"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/gomooth/pkg/framework/dbquery"
 	"github.com/gomooth/pkg/framework/pager"
+	"github.com/gomooth/pkg/framework/telemetry"
 	"github.com/gomooth/xerror"
 	"github.com/gomooth/xerror/xcode"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 )
 
@@ -52,6 +56,9 @@ type searcher[M any, F any] struct {
 	filterTransfer  func(filter *F, db *gorm.DB) *gorm.DB
 	sortMapping     *dbquery.SortMapping
 	cursorExtractor func(*M) string
+	tracer          trace.Tracer
+	modelName       string
+	traceConfig     *traceConfig
 }
 
 var _ ISearcher[struct{}, struct{}] = (*searcher[struct{}, struct{}])(nil)
@@ -70,16 +77,36 @@ func NewSearcher[M any, F any](db *gorm.DB, opts ...SearcherOption[M, F]) (ISear
 		opt(cnf)
 	}
 
+	tc := cnf.traceConfig
+	if tc == nil {
+		tc = &traceConfig{methodSpan: true, buildSpan: false}
+	}
+
 	return &searcher[M, F]{
 		db:              db,
 		filterTransfer:  cnf.filterTransfer,
 		sortMapping:     cnf.sortMapping,
 		cursorExtractor: cnf.cursorExtractor,
+		tracer:          telemetry.Tracer("dbrepo"),
+		modelName:       reflect.TypeOf(new(M)).Elem().Name(),
+		traceConfig:     tc,
 	}, nil
 }
 
 // buildQuery 构建 GORM 查询
 func (q *searcher[M, F]) buildQuery(ctx context.Context, query dbquery.IQuery[F], extraOpts ...dbquery.BuildOption[F]) (*gorm.DB, error) {
+	if q.traceConfig != nil && q.traceConfig.buildSpan {
+		var buildSpan trace.Span
+		ctx, buildSpan = q.tracer.Start(ctx, "dbrepo.searcher.buildQuery",
+			trace.WithAttributes(
+				attribute.String("db.operation", "build_query"),
+				attribute.String("db.model", q.modelName),
+			),
+			trace.WithSpanKind(trace.SpanKindInternal),
+		)
+		defer buildSpan.End()
+	}
+
 	db := q.db.WithContext(ctx).Model(new(M))
 	opts := []dbquery.BuildOption[F]{
 		dbquery.WithFilterTransfer[F](q.filterTransfer),
@@ -91,6 +118,11 @@ func (q *searcher[M, F]) buildQuery(ctx context.Context, query dbquery.IQuery[F]
 
 // FindAll 查询所有记录
 func (q *searcher[M, F]) FindAll(ctx context.Context, query dbquery.IQuery[F]) (records []*M, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "find_all")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "find_all", time.Since(start), err)
@@ -109,6 +141,11 @@ func (q *searcher[M, F]) FindAll(ctx context.Context, query dbquery.IQuery[F]) (
 
 // List 分页查询记录（不返回总数）
 func (q *searcher[M, F]) List(ctx context.Context, query dbquery.IQuery[F]) (records []*M, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "list")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "list", time.Since(start), err)
@@ -127,6 +164,11 @@ func (q *searcher[M, F]) List(ctx context.Context, query dbquery.IQuery[F]) (rec
 
 // Paginate 分页查询记录（返回总数）
 func (q *searcher[M, F]) Paginate(ctx context.Context, query dbquery.IQuery[F]) (records []*M, total uint, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "paginate")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "paginate", time.Since(start), err)
@@ -161,6 +203,11 @@ func (q *searcher[M, F]) Paginate(ctx context.Context, query dbquery.IQuery[F]) 
 
 // CountBy 统计记录数量
 func (q *searcher[M, F]) CountBy(ctx context.Context, filter *F) (count int64, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "count_by")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "count_by", time.Since(start), err)
@@ -186,6 +233,11 @@ func (q *searcher[M, F]) CountBy(ctx context.Context, filter *F) (count int64, e
 
 // ExistsBy 判断记录是否存在（使用 SELECT 1 ... LIMIT 1，比 COUNT 更高效）
 func (q *searcher[M, F]) ExistsBy(ctx context.Context, filter *F) (exists bool, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "exists_by")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "exists_by", time.Since(start), err)
@@ -212,6 +264,11 @@ func (q *searcher[M, F]) ExistsBy(ctx context.Context, filter *F) (exists bool, 
 
 // Find 通用查询方法
 func (q *searcher[M, F]) Find(ctx context.Context, query dbquery.IQuery[F], optBuilders ...findOptionBuilder) (records []*M, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "find")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "find", time.Since(start), err)
@@ -245,6 +302,11 @@ func (q *searcher[M, F]) Find(ctx context.Context, query dbquery.IQuery[F], optB
 
 // FirstWith 带选项查询单条记录
 func (q *searcher[M, F]) FirstWith(ctx context.Context, query dbquery.IQuery[F], optBuilders ...findOptionBuilder) (record *M, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "first_with")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "first_with", time.Since(start), err)
@@ -279,6 +341,11 @@ func (q *searcher[M, F]) FirstWith(ctx context.Context, query dbquery.IQuery[F],
 
 // ListByCursor 游标分页查询记录
 func (q *searcher[M, F]) ListByCursor(ctx context.Context, query dbquery.IQuery[F]) (records []*M, nextCursor pager.Cursor, err error) {
+	ctx, span := startSearcherMethodSpan[M, F](ctx, q, "list_by_cursor")
+	defer func() {
+		finishSpan(span, err)
+	}()
+
 	start := time.Now()
 	defer func() {
 		recordDBRepoMetric(ctx, "searcher", "list_by_cursor", time.Since(start), err)
