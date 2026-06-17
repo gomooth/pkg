@@ -128,9 +128,9 @@ func (e *asyncRetryEngine) SetSession(session sarama.ConsumerGroupSession) {
 
 	e.startWorkers(ctx)
 
-	// Redis 模式：恢复 pending
-	if _, ok := e.strategy.(*directMarkStrategy); ok && e.store != nil {
-		e.wg.Add(1) // 修复 P7：recoverPending 加入 wg
+	// 恢复 pending（仅 Redis 模式有 store 且需要恢复，memory 模式无持久化数据可恢复）
+	if e.store != nil {
+		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
 			e.recoverPending(ctx)
@@ -194,9 +194,6 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 
 	if err == nil {
 		e.strategy.OnSuccess(ctx, session, &RetryItem{Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset})
-		if _, ok := e.strategy.(*directMarkStrategy); ok {
-			session.MarkMessage(msg, "")
-		}
 		if e.metrics != nil {
 			e.metrics.OnConsume()
 		}
@@ -209,17 +206,12 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 			e.deadLetter, e.failedHandler, e.logger, e.metrics)
 		if result == exhaustedHandled {
 			e.strategy.OnExhausted(ctx, session, &RetryItem{Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset})
-			if _, ok := e.strategy.(*directMarkStrategy); ok {
-				session.MarkMessage(msg, "")
-			}
 		}
 		return
 	}
 
 	// 记录跟踪的 partition
-	if ws, ok := e.strategy.(*watermarkStrategy); ok {
-		ws.trackPartition(msg.Topic, msg.Partition)
-	}
+	e.strategy.OnEnqueue(msg)
 
 	if e.metrics != nil {
 		e.metrics.OnRetry()
@@ -251,17 +243,12 @@ func (e *asyncRetryEngine) OnMessage(ctx context.Context, session sarama.Consume
 			e.deadLetter, e.failedHandler, e.logger, e.metrics)
 		if result == exhaustedHandled {
 			e.strategy.OnScheduleFailed(ctx, session, &RetryItem{Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset})
-			if _, ok := e.strategy.(*directMarkStrategy); ok {
-				session.MarkMessage(msg, "")
-			}
 		}
 		return
 	}
 
-	// Redis 模式：持久化成功即可提交 offset
-	if _, ok := e.strategy.(*directMarkStrategy); ok {
-		session.MarkMessage(msg, "")
-	}
+	// 持久化成功后通知策略
+	e.strategy.MarkImmediate(session, msg)
 }
 
 // applyHandlerTimeout 统一包装 handler 超时（修复 P9）
@@ -289,18 +276,7 @@ func (e *asyncRetryEngine) processRetry(ctx context.Context, item *RetryItem) {
 
 	if err == nil {
 		// 重试成功
-		if ws, ok := e.strategy.(*watermarkStrategy); ok {
-			ws.OnSuccess(ctx, e.getSession(), item)
-		} else {
-			e.store.Remove(ctx, item)
-			if session := e.getSession(); session != nil {
-				session.MarkMessage(&sarama.ConsumerMessage{
-					Topic:     item.Topic,
-					Partition: item.Partition,
-					Offset:    item.Offset,
-				}, "")
-			}
-		}
+		e.strategy.OnSuccess(ctx, e.getSession(), item)
 		if e.metrics != nil {
 			e.metrics.OnConsume()
 		}
@@ -335,11 +311,7 @@ func (e *asyncRetryEngine) processRetry(ctx context.Context, item *RetryItem) {
 	result := handleExhausted(ctx, e.consumerGroup, item.Topic, item.Value, err,
 		e.deadLetter, e.failedHandler, e.logger, e.metrics)
 	if result == exhaustedHandled {
-		if ws, ok := e.strategy.(*watermarkStrategy); ok {
-			ws.OnExhausted(ctx, e.getSession(), item)
-		} else {
-			e.store.Remove(ctx, item)
-		}
+		e.strategy.OnExhausted(ctx, e.getSession(), item)
 	}
 }
 

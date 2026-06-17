@@ -104,7 +104,17 @@ func (s *watermarkStrategy) OnShutdown(_ context.Context) {
 	}
 }
 
-// trackPartition 记录跟踪的 partition（供 asyncRetryEngine 调用）
+// MarkImmediate 水位线模式下不需要立即 MarkMessage（通过水位线批量提交）
+func (s *watermarkStrategy) MarkImmediate(_ sarama.ConsumerGroupSession, _ *sarama.ConsumerMessage) {
+	// no-op: watermark 模式通过 commitWatermark 批量提交
+}
+
+// OnEnqueue 消息首次放入重试队列时，记录跟踪的 partition
+func (s *watermarkStrategy) OnEnqueue(msg *sarama.ConsumerMessage) {
+	s.trackPartition(msg.Topic, msg.Partition)
+}
+
+// trackPartition 记录跟踪的 partition（OnEnqueue 内部调用，也可直接使用）
 func (s *watermarkStrategy) trackPartition(topic string, partition int32) {
 	s.tpMu.Lock()
 	s.trackedParts[topicPartition{topic: topic, partition: partition}] = true

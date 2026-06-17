@@ -28,4 +28,14 @@ type CommitStrategy interface {
 
 	// OnShutdown 关闭时的通知逻辑
 	OnShutdown(shutdownCtx context.Context)
+
+	// MarkImmediate 消息首次成功时是否立即 MarkMessage。
+	// watermarkStrategy: no-op（通过水位线批量提交）
+	// directMarkStrategy: session.MarkMessage(msg, "")
+	MarkImmediate(session sarama.ConsumerGroupSession, msg *sarama.ConsumerMessage)
+
+	// OnEnqueue 消息首次放入重试队列时的附加动作。
+	// watermarkStrategy: trackPartition(msg.Topic, msg.Partition)
+	// directMarkStrategy: no-op
+	OnEnqueue(msg *sarama.ConsumerMessage)
 }

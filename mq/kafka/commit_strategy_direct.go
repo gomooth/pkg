@@ -26,19 +26,44 @@ func newDirectMarkStrategy(store RetryStore, logger logutil.Logger) *directMarkS
 	}
 }
 
-// OnSuccess 消息处理成功后：无操作（Redis 模式下 OnMessage 中成功时直接 MarkMessage）
-func (s *directMarkStrategy) OnSuccess(_ context.Context, _ sarama.ConsumerGroupSession, _ *RetryItem) {
-	// Redis 模式：成功时已在 OnMessage 中直接 MarkMessage，无需额外操作
+// OnSuccess 消息处理成功后：从 store 移除 + MarkMessage
+func (s *directMarkStrategy) OnSuccess(_ context.Context, session sarama.ConsumerGroupSession, item *RetryItem) {
+	if s.store != nil {
+		_ = s.store.Remove(context.Background(), item)
+	}
+	if session != nil {
+		session.MarkMessage(&sarama.ConsumerMessage{
+			Topic:     item.Topic,
+			Partition: item.Partition,
+			Offset:    item.Offset,
+		}, "")
+	}
 }
 
-// OnExhausted 重试耗尽后：无操作（Redis 模式下 exhausted 后直接 MarkMessage）
-func (s *directMarkStrategy) OnExhausted(_ context.Context, _ sarama.ConsumerGroupSession, _ *RetryItem) {
-	// Redis 模式：exhausted 后已在 OnMessage 中直接 MarkMessage，无需额外操作
+// OnExhausted 重试耗尽后：从 store 移除 + MarkMessage
+func (s *directMarkStrategy) OnExhausted(_ context.Context, session sarama.ConsumerGroupSession, item *RetryItem) {
+	if s.store != nil {
+		_ = s.store.Remove(context.Background(), item)
+	}
+	if session != nil {
+		session.MarkMessage(&sarama.ConsumerMessage{
+			Topic:     item.Topic,
+			Partition: item.Partition,
+			Offset:    item.Offset,
+		}, "")
+	}
 }
 
-// OnScheduleFailed Schedule 失败降级为 exhausted 后：无操作
-func (s *directMarkStrategy) OnScheduleFailed(_ context.Context, _ sarama.ConsumerGroupSession, _ *RetryItem) {
-	// Redis 模式：Schedule 失败后已在 OnMessage 中直接 MarkMessage，无需额外操作
+// OnScheduleFailed Schedule 失败降级为 exhausted 后：MarkMessage
+func (s *directMarkStrategy) OnScheduleFailed(_ context.Context, session sarama.ConsumerGroupSession, item *RetryItem) {
+	// Schedule 失败意味着消息未被持久化，无需 Remove；但需要提交 offset
+	if session != nil {
+		session.MarkMessage(&sarama.ConsumerMessage{
+			Topic:     item.Topic,
+			Partition: item.Partition,
+			Offset:    item.Offset,
+		}, "")
+	}
 }
 
 // StartWorkers 启动 redisPollLoop worker 协程
@@ -99,6 +124,18 @@ func (s *directMarkStrategy) redisPollLoop(ctx context.Context, wg *sync.WaitGro
 // OnClearSession session 结束时：无操作
 func (s *directMarkStrategy) OnClearSession() {
 	// Redis 模式无需重置 partition
+}
+
+// MarkImmediate 直接标记模式：立即 MarkMessage
+func (s *directMarkStrategy) MarkImmediate(session sarama.ConsumerGroupSession, msg *sarama.ConsumerMessage) {
+	if session != nil {
+		session.MarkMessage(msg, "")
+	}
+}
+
+// OnEnqueue 直接标记模式下无需额外动作
+func (s *directMarkStrategy) OnEnqueue(_ *sarama.ConsumerMessage) {
+	// no-op: direct mark 模式无需 trackPartition
 }
 
 // OnShutdown 关闭时：无操作
