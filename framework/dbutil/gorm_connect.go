@@ -185,7 +185,7 @@ func connectOrWait(ctx context.Context, holder *dbHolder, option *Option, opt *c
 }
 
 // ConnectWithContext 通过 context 获取数据库连接
-func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...ConnectOption) (*gorm.DB, error) {
 	if err := validateConnectOption(option); err != nil {
 		return nil, err
 	}
@@ -216,13 +216,13 @@ func ConnectWithContext(ctx context.Context, option *Option, optBuilders ...func
 }
 
 // Connect 获取数据库连接
-func Connect(option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+func Connect(option *Option, optBuilders ...ConnectOption) (*gorm.DB, error) {
 	return ConnectWithContext(context.Background(), option, optBuilders...)
 }
 
 // ConnectWithReconnect 强制重建数据库连接（即使缓存连接存在）。
 // 当检测到连接断开时可使用此函数。
-func ConnectWithReconnect(ctx context.Context, option *Option, optBuilders ...func(*connectOption)) (*gorm.DB, error) {
+func ConnectWithReconnect(ctx context.Context, option *Option, optBuilders ...ConnectOption) (*gorm.DB, error) {
 	if option == nil {
 		return nil, xerror.NewXCode(xcode.ErrDBConnect, "dbutil: connect option is empty")
 	}

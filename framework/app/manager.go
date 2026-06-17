@@ -15,6 +15,17 @@ import (
 	"github.com/gomooth/xerror/xcode"
 )
 
+// managerOption Manager 选项的中间结构体
+type managerOption struct {
+	apps            []IApp
+	log             *slog.Logger
+	shutdownTimeout time.Duration
+	startupTimeout  time.Duration
+}
+
+// ManagerOption Manager 选项函数
+type ManagerOption func(*managerOption)
+
 type manager struct {
 	apps            []IApp
 	log             *slog.Logger
@@ -25,18 +36,28 @@ type manager struct {
 var _ IManager = (*manager)(nil)
 
 // NewManager 创建 APP 管理器
-func NewManager(opts ...func(*manager)) IManager {
-	m := &manager{
-		apps:            make([]IApp, 0),
+func NewManager(opts ...ManagerOption) IManager {
+	cnf := &managerOption{
 		shutdownTimeout: 30 * time.Second,
 	}
 
 	for _, opt := range opts {
-		opt(m)
+		opt(cnf)
 	}
 
+	m := &manager{
+		apps:            cnf.apps,
+		shutdownTimeout: cnf.shutdownTimeout,
+		startupTimeout:  cnf.startupTimeout,
+	}
+	if cnf.log != nil {
+		m.log = cnf.log
+	}
 	if m.log == nil {
 		m.log = logger.NewConsoleLogger()
+	}
+	if m.apps == nil {
+		m.apps = make([]IApp, 0)
 	}
 
 	return m

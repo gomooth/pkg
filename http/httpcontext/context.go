@@ -27,6 +27,22 @@ type IHttpContext interface {
 	StorageTo(ctx *gin.Context) bool
 }
 
+// httpContextOption httpContext 选项的中间结构体
+type httpContextOption struct {
+	parent context.Context
+	user   *User
+	data   []contextKV // WithData/WithRawRequestBody 的键值对
+}
+
+// contextKV 键值对，用于 WithData 选项
+type contextKV struct {
+	key   string
+	value any
+}
+
+// ContextOption httpContext 选项函数
+type ContextOption func(*httpContextOption)
+
 type httpContext struct {
 	parent context.Context
 	user   *User
@@ -35,13 +51,21 @@ type httpContext struct {
 var _ IHttpContext = (*httpContext)(nil)
 
 // NewContext 创建自定义 HTTP 上下文，通过选项函数进行初始化配置
-func NewContext(opts ...func(*httpContext)) IHttpContext {
-	c := &httpContext{
+func NewContext(opts ...ContextOption) IHttpContext {
+	cnf := &httpContextOption{
 		parent: context.Background(),
 	}
 
 	for _, opt := range opts {
-		opt(c)
+		opt(cnf)
+	}
+
+	c := &httpContext{
+		parent: cnf.parent,
+		user:   cnf.user,
+	}
+	for _, d := range cnf.data {
+		c.parent = context.WithValue(c.parent, ctxKey(d.key), d.value)
 	}
 
 	return c

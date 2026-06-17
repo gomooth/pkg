@@ -128,10 +128,10 @@ func TestWithApp(t *testing.T) {
 }
 
 func TestWithApp_NilApps(t *testing.T) {
-	// WithApp initializes apps if nil
-	mgr := &manager{}
-	WithApp(&noHealthApp{})(mgr)
-	require.Len(t, mgr.apps, 1)
+	// WithApp 初始化 apps slice
+	cnf := &managerOption{}
+	WithApp(&noHealthApp{})(cnf)
+	require.Len(t, cnf.apps, 1)
 }
 
 func TestWithShutdownTimeout(t *testing.T) {

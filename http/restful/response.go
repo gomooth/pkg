@@ -26,6 +26,21 @@ import (
 	"golang.org/x/text/language"
 )
 
+// responseOption Restful 响应选项的中间结构体
+type responseOption struct {
+	languageHeaderKey  string
+	supportedLanguages []language.Tag
+	msgHandler         func(code int, lang language.Tag) string
+	defaultedLanguage  language.Tag
+	visibleErrorCodes  []int
+	logger             *slog.Logger
+	debugError         bool
+	strictHeaders      bool
+}
+
+// ResponseOption Restful 响应选项函数
+type ResponseOption func(*responseOption)
+
 type response struct {
 	ctx    *gin.Context
 	logger *slog.Logger
@@ -57,15 +72,26 @@ var _ IResponse = (*response)(nil)
 //		ctx,
 //		restful.WithResponseErrorMsgHandler(lang.Handle()),
 //	)
-func NewResponse(ctx *gin.Context, opts ...func(*response)) IResponse {
-	resp := &response{
-		ctx:               ctx,
+func NewResponse(ctx *gin.Context, opts ...ResponseOption) IResponse {
+	cnf := &responseOption{
 		visibleErrorCodes: nil, // nil = 所有错误码均可见
 		strictHeaders:     true,
 	}
 
 	for _, opt := range opts {
-		opt(resp)
+		opt(cnf)
+	}
+
+	resp := &response{
+		ctx:               ctx,
+		languageHeaderKey:  cnf.languageHeaderKey,
+		supportedLanguages: cnf.supportedLanguages,
+		msgHandler:         cnf.msgHandler,
+		defaultedLanguage:  cnf.defaultedLanguage,
+		visibleErrorCodes:  cnf.visibleErrorCodes,
+		debugError:         cnf.debugError,
+		strictHeaders:      cnf.strictHeaders,
+		logger:             cnf.logger,
 	}
 
 	if resp.logger == nil {
