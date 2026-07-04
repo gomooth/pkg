@@ -209,3 +209,43 @@ func BenchmarkGet(b *testing.B) {
 		}
 	})
 }
+
+func TestList_Empty(t *testing.T) {
+	manager := NewMemoryManager()
+	names := manager.List()
+	assert.Equal(t, 0, len(names))
+}
+
+func TestList_WithConnections(t *testing.T) {
+	manager := NewMemoryManager()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+
+	err = manager.Register("alpha", db)
+	assert.NoError(t, err)
+	err = manager.Register("beta", db)
+	assert.NoError(t, err)
+
+	names := manager.List()
+	assert.Equal(t, 2, len(names))
+	assert.Contains(t, names, "alpha")
+	assert.Contains(t, names, "beta")
+}
+
+func TestList_AfterUnregister(t *testing.T) {
+	manager := NewMemoryManager()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+
+	err = manager.Register("alpha", db)
+	assert.NoError(t, err)
+	err = manager.Register("beta", db)
+	assert.NoError(t, err)
+
+	_ = manager.Unregister("alpha")
+	names := manager.List()
+	assert.Equal(t, 1, len(names))
+	assert.Contains(t, names, "beta")
+}

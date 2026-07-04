@@ -76,3 +76,15 @@ func (m *memoryManager) CloseAll() error {
 	})
 	return firstErr
 }
+
+// List 返回所有已注册的数据库连接名
+func (m *memoryManager) List() []string {
+	var names []string
+	m.connections.Range(func(key, _ any) bool {
+		if name, ok := key.(string); ok {
+			names = append(names, name)
+		}
+		return true
+	})
+	return names
+}
