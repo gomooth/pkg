@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/framework/xcode"
 	"github.com/gomooth/xerror"
 )
 

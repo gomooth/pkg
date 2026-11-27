@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/gomooth/pkg/framework/telemetry"
+	"github.com/gomooth/framework/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )

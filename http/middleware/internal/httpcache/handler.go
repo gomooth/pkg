@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/framework/telemetry"
+	"github.com/gomooth/framework/telemetry"
 	"github.com/gomooth/pkg/http/middleware/internal/httpcache/store"
 	"github.com/gomooth/xerror"
 

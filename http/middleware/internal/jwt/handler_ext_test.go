@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/framework/xcode"
 	"github.com/gomooth/pkg/http/httpcontext"
 	pkgjwt "github.com/gomooth/pkg/http/jwt"
 	"github.com/gomooth/xerror"

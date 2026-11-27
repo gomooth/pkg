@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gomooth/pkg/framework/logger"
-	"github.com/gomooth/pkg/framework/pager"
+	"github.com/gomooth/framework/logger"
+	"github.com/gomooth/framework/pager"
 	"github.com/gomooth/pkg/http/httpcontext"
 	"github.com/gomooth/utils/valutil"
 

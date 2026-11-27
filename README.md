@@ -6,7 +6,6 @@ Go 语言通用工具包，提供企业级应用开发的基础框架和工具�
 
 | 模块 | 说明 |
 |------|------|
-| [framework](./framework/) | 基础框架层：应用生命周期、缓存、数据库访问、日志、指标、重试、分页、校验 |
 | [http](./http/) | HTTP 服务：JWT 认证、Gin 中间件、RESTful 响应、XSS 防护 |
 | [job](./job/) | 定时任务：Cron 包装器、命令式任务（含自动重试） |
 | [storage](./storage/) | 文件存储：公开/私有/临时文件管理，路径安全防护 |
@@ -99,25 +98,6 @@ path, _ := d.Path()    // storage/exports/reports/data.csv
 
 各子包提供独立的 README 文档：
 
-### framework — [README](./framework/README.md)
-
-| 子包 | 说明 |
-|------|------|
-| [app](./framework/app/) | 应用生命周期管理（graceful shutdown + 健康检查） |
-| [cache](./framework/cache/) | 泛型缓存（gocache + singleflight + OTel 指标） |
-| [dbcache](./framework/dbcache/) | 数据库查询结果缓存（自动续期、错误短缓存、tag 失效） |
-| [dberror](./framework/dberror/) | 数据库错误识别（唯一键/外键/非空约束冲突） |
-| [dbmanager](./framework/dbmanager/) | 数据库连接管理器 |
-| [dbquery](./framework/dbquery/) | 查询构建器（Filter/Sort/Page 三维正交分解） |
-| [dbrepo](./framework/dbrepo/) | 泛型 DAO（CRUD + 事务 + 游标分页） |
-| [dbutil](./framework/dbutil/) | 数据库连接工具（健康检查 + 自动重连） |
-| [logger](./framework/logger/) | 日志（slog + OTel 链路追踪 + 采样限流） |
-| [metrics](./framework/metrics/) | 指标（OTel Counter/Histogram/Gauge 委托模式） |
-| [pager](./framework/pager/) | 分页器（偏移量 + 游标分页） |
-| [retry](./framework/retry/) | 重试（固定/线性/指数退避 + jitter + 谓词过滤） |
-| [validator](./framework/validator/) | 结构体校验 |
-| [xcode](./framework/xcode/) | 错误码（分类定义 + HTTP 状态映射） |
-
 ### http — [README](./http/README.md)
 
 | 子包 | 说明 |
@@ -144,7 +124,6 @@ Cron 包装器、命令式任务（含自动重试 + 超时控制）
 
 ```
 pkg/
-├── framework/           # 基础框架层
 │   ├── app/            # 应用生命周期管理（graceful shutdown + 健康检查）
 │   ├── cache/          # 泛型缓存（gocache + singleflight + OTel 指标）
 │   ├── dbcache/        # 数据库查询结果缓存（自动续期、错误短缓存、tag 失效）
@@ -203,3 +182,13 @@ mq 已拆至独立五仓（`github.com/gomooth/mq` + `mq-kafka`/`mq-redis`/`mq-h
 | `github.com/gomooth/pkg/mq/httpsqs` | `github.com/gomooth/mq-httpsqs` |
 
 接口契约零变化；驱动 `NewProducer` 统一 `ProducerConfig` 形态、新增 `EngineFrom`（`NewEngine(cfg)`）。
+
+## v0.6.0 迁移（framework 整树拆出 → gomooth/framework）
+
+framework 15 包已拆至独立仓 `github.com/gomooth/framework`（含 app/cache/dbcache/dberror/dbmanager/dbquery/dbrepo/dbutil/logger/pager/retry/telemetry/validator/xcode）。import 唯一对照规则：
+
+| 旧（pkg） | 新 |
+|---|---|
+| `github.com/gomooth/pkg/framework/<pkg>` | `github.com/gomooth/framework/<pkg>` |
+
+pkg 现为纯三域仓（http/job/storage）；接口契约零变化。用法文档随迁：`gomooth/framework` 仓 README。

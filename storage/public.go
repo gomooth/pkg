@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/framework/xcode"
 	"github.com/gomooth/xerror"
 )
 

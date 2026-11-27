@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/framework/xcode"
 	"github.com/gomooth/pkg/http/jwt"
 	"github.com/gomooth/xerror"
 

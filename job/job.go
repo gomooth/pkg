@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/gomooth/pkg/framework/retry"
-	"github.com/gomooth/pkg/framework/telemetry"
+	"github.com/gomooth/framework/retry"
+	"github.com/gomooth/framework/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"

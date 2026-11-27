@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/framework/telemetry"
+	"github.com/gomooth/framework/telemetry"
 	"github.com/gomooth/pkg/http/httpcontext"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

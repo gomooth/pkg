@@ -2,8 +2,8 @@ package jwt
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/framework/telemetry"
-	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/framework/telemetry"
+	"github.com/gomooth/framework/xcode"
 	"github.com/gomooth/pkg/http/httpcontext"
 	"github.com/gomooth/pkg/http/jwt"
 	"github.com/gomooth/xerror"

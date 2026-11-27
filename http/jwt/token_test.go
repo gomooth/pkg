@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/framework/xcode"
 	"github.com/gomooth/pkg/http/httpcontext"
 	"github.com/gomooth/xerror"
 	"github.com/golang-jwt/jwt/v5"

@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/gomooth/pkg/framework/telemetry"
+	"github.com/gomooth/framework/telemetry"
 )
 
 // testProvider 挂 SpanRecorder 的最小 telemetry.Provider（Meter/Logger 与

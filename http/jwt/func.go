@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gomooth/pkg/framework/xcode"
+	"github.com/gomooth/framework/xcode"
 	"github.com/gomooth/xerror"
 
 	"github.com/gin-gonic/gin"
