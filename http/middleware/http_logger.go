@@ -44,7 +44,7 @@ func HttpLogger(opt HttpLoggerOption) gin.HandlerFunc {
 		}
 
 		if needLog {
-			opt.Logger.Info(l.String())
+			opt.Logger.InfoContext(c.Request.Context(), l.String())
 		}
 	}
 }

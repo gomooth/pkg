@@ -35,6 +35,18 @@ func WithFormat(format types.LogFormat) func(*types.Option) {
 	}
 }
 
+// WithFormatString 通过日志格式字符串设置
+// 支持日志格式：json；其余值（含空串）均按 text 处理
+func WithFormatString(format string) func(*types.Option) {
+	return func(o *types.Option) {
+		if format == "json" {
+			o.Format = types.LogFormatJson
+		} else {
+			o.Format = types.LogFormatText
+		}
+	}
+}
+
 // WithStdPrint 设置是否控制台输出
 func WithStdPrint(enabled bool) func(*types.Option) {
 	return func(o *types.Option) {

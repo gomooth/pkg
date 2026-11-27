@@ -9,7 +9,7 @@ import (
 	"github.com/gomooth/pkg/framework/logger/internal/types"
 )
 
-// New 创建控制台日志器，可选配置 OTel LoggerProvider 启用 OTLP 日志导出。
+// New 创建控制台日志器。
 func New(opts ...func(*types.Option)) *slog.Logger {
 	cnf := types.DefaultOption()
 	for _, opt := range opts {

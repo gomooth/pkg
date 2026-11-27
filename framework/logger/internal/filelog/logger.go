@@ -20,7 +20,7 @@ func New(opts ...func(*types.Option)) *slog.Logger {
 	return NewWith(types.GetDefaultDir(), opts...)
 }
 
-// NewWith 创建文件日志器，支持日志文件自动分割，可选配置 OTel LoggerProvider 启用 OTLP 日志导出。
+// NewWith 创建文件日志器，支持日志文件自动分割。
 func NewWith(logPath string, opts ...func(*types.Option)) *slog.Logger {
 	// 创建目录
 	if _, err := os.Stat(logPath); errors.Is(err, fs.ErrNotExist) {
