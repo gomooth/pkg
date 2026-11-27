@@ -44,7 +44,7 @@ func (h *dbHolder) isHealthy() bool {
 }
 
 // 获取db
-func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, error) {
+func connectWithoutCache(dialect gorm.Dialector, option *Option, plugins ...gorm.Plugin) (*gorm.DB, error) {
 	cnf := option.Config
 
 	opt := &gorm.Config{}
@@ -57,6 +57,20 @@ func connectWithoutCache(dialect gorm.Dialector, option *Option) (*gorm.DB, erro
 			} else {
 				opt.Logger = newLogger(option.Logger)
 			}
+		}
+	}
+
+	// 组装 gorm 插件注册表：p.Name() → p，nil 元素跳过
+	if len(plugins) > 0 {
+		optPlugins := make(map[string]gorm.Plugin, len(plugins))
+		for _, p := range plugins {
+			if p == nil {
+				continue
+			}
+			optPlugins[p.Name()] = p
+		}
+		if len(optPlugins) > 0 {
+			opt.Plugins = optPlugins
 		}
 	}
 
@@ -176,7 +190,7 @@ func connectOrWait(ctx context.Context, holder *dbHolder, option *Option, opt *c
 		return nil, xerror.WrapWithXCode(err, xcode.ErrDBConnect)
 	}
 
-	holder.db, holder.err = connectWithoutCache(dialect, option)
+	holder.db, holder.err = connectWithoutCache(dialect, option, opt.plugins...)
 	if holder.err == nil {
 		holder.ready = true
 	}

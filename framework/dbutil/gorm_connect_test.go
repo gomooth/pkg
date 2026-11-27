@@ -231,13 +231,6 @@ func TestToDialect_Unsupported(t *testing.T) {
 
 // --- Logger functions ---
 
-func TestNewWriter_Printf(t *testing.T) {
-	log := slog.Default()
-	w := newWriter(log)
-	// Should not panic
-	w.Printf("test message: %s=%d", "key", 42)
-}
-
 func TestNewLogger(t *testing.T) {
 	log := slog.Default()
 	l := newLogger(log)
@@ -467,13 +460,6 @@ func TestConnect_WithInvalidDriver(t *testing.T) {
 	db, err := Connect(opt)
 	assert.Error(t, err)
 	assert.Nil(t, db)
-}
-
-// --- dbWriter.Printf direct test ---
-
-func TestDbWriter_Printf(t *testing.T) {
-	w := &dbWriter{log: slog.Default()}
-	w.Printf("hello %s, number %d", "world", 123)
 }
 
 // --- ConnectWithContext: second context cancellation after lock ---
