@@ -2,6 +2,7 @@ package restful
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -626,7 +627,7 @@ func TestWithResponseLanguageHeaderKey(t *testing.T) {
 	r := NewResponse(c,
 		WithResponseErrorMsgHandler(
 			[]language.Tag{language.AmericanEnglish, language.SimplifiedChinese},
-			func(code int, lang language.Tag) string {
+			func(ctx context.Context, code int, lang language.Tag) string {
 				if lang == language.AmericanEnglish {
 					return "English error"
 				}
@@ -655,7 +656,7 @@ func TestWithResponseLanguageHeaderKey_CustomKey(t *testing.T) {
 	r := NewResponse(c,
 		WithResponseErrorMsgHandler(
 			[]language.Tag{language.AmericanEnglish},
-			func(code int, lang language.Tag) string {
+			func(ctx context.Context, code int, lang language.Tag) string {
 				if lang == language.AmericanEnglish {
 					return "custom header error"
 				}
@@ -686,7 +687,7 @@ func TestWithResponseDefaultLanguage(t *testing.T) {
 		WithResponseDefaultLanguage(language.AmericanEnglish),
 		WithResponseErrorMsgHandler(
 			[]language.Tag{language.AmericanEnglish},
-			func(code int, lang language.Tag) string {
+			func(ctx context.Context, code int, lang language.Tag) string {
 				if lang == language.AmericanEnglish {
 					return "English error message"
 				}
@@ -804,7 +805,7 @@ func TestDetectLanguage_XLanguageHeader(t *testing.T) {
 	r := NewResponse(c,
 		WithResponseErrorMsgHandler(
 			[]language.Tag{language.AmericanEnglish},
-			func(code int, lang language.Tag) string {
+			func(ctx context.Context, code int, lang language.Tag) string {
 				if lang == language.AmericanEnglish {
 					return "English message"
 				}
@@ -834,7 +835,7 @@ func TestDetectLanguage_InvalidAcceptLanguage(t *testing.T) {
 		WithResponseDefaultLanguage(language.AmericanEnglish),
 		WithResponseErrorMsgHandler(
 			[]language.Tag{language.AmericanEnglish},
-			func(code int, lang language.Tag) string {
+			func(ctx context.Context, code int, lang language.Tag) string {
 				return "fallback"
 			},
 		),
@@ -886,4 +887,38 @@ func TestRebuildRequestBody_WithCachedBody(t *testing.T) {
 	r := NewResponse(c)
 	r.WithError(errors.New("test error"))
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// --- msgHandler ctx 传播（v0.4.0：错误翻译挂请求链路） ---
+
+type msgCtxKey struct{}
+
+// TestMsgHandlerReceivesRequestContext msgHandler 回调收到的 ctx 应即请求
+// ctx（挂请求链路 span），而非 Background——经请求级 marker 值比对。
+func TestMsgHandlerReceivesRequestContext(t *testing.T) {
+	w, c := newTestContext()
+	c.Request.Header.Set("X-Language", "en-US")
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), msgCtxKey{}, "req-marker"))
+
+	var gotMarker any
+	r := NewResponse(c,
+		WithResponseErrorMsgHandler(
+			[]language.Tag{language.AmericanEnglish},
+			func(ctx context.Context, code int, lang language.Tag) string {
+				gotMarker = ctx.Value(msgCtxKey{})
+				return "translated"
+			},
+		),
+	)
+
+	xerr := xerror.NewXCode(
+		xcode.NewWithHTTPStatus(10001, http.StatusBadRequest, "bad request"),
+	)
+	r.WithError(xerr)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.Nil(t, err)
+	assert.Equal(t, "translated", body["message"])
+	assert.Equal(t, "req-marker", gotMarker, "回调 ctx 应为请求 ctx")
 }

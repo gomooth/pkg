@@ -1,6 +1,7 @@
 package restful
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/gomooth/xerror/xcode"
@@ -19,7 +20,7 @@ func WithResponseLanguageHeaderKey(languageHeaderKey string) ResponseOption {
 // WithResponseErrorMsgHandler 指定错误消息处理器。
 // 主要应用于多国语言展示错误信息。
 // 其中，`code` 为错误码；`language` 为标准的 i18n 标识
-func WithResponseErrorMsgHandler(supported []language.Tag, handle func(code int, lang language.Tag) string) ResponseOption {
+func WithResponseErrorMsgHandler(supported []language.Tag, handle func(ctx context.Context, code int, lang language.Tag) string) ResponseOption {
 	return func(o *responseOption) {
 		o.supportedLanguages = supported
 		o.languageHeaderKey = LangHeaderKey

@@ -2,6 +2,7 @@ package restful
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ import (
 type responseOption struct {
 	languageHeaderKey  string
 	supportedLanguages []language.Tag
-	msgHandler         func(code int, lang language.Tag) string
+	msgHandler         func(ctx context.Context, code int, lang language.Tag) string
 	defaultedLanguage  language.Tag
 	visibleErrorCodes  []int
 	logger             *slog.Logger
@@ -47,7 +48,7 @@ type response struct {
 
 	languageHeaderKey  string
 	supportedLanguages []language.Tag
-	msgHandler         func(code int, lang language.Tag) string
+	msgHandler         func(ctx context.Context, code int, lang language.Tag) string
 	defaultedLanguage  language.Tag
 
 	// visibleErrorCodes 允许向客户端展示的错误码白名单
@@ -83,7 +84,7 @@ func NewResponse(ctx *gin.Context, opts ...ResponseOption) IResponse {
 	}
 
 	resp := &response{
-		ctx:               ctx,
+		ctx:                ctx,
 		languageHeaderKey:  cnf.languageHeaderKey,
 		supportedLanguages: cnf.supportedLanguages,
 		msgHandler:         cnf.msgHandler,
@@ -421,12 +422,21 @@ func (r *response) getErrorMsg(err xerror.XError) string {
 		return msg
 	}
 
-	str := r.msgHandler(err.ErrorCode(), lang)
+	str := r.msgHandler(r.requestCtx(), err.ErrorCode(), lang)
 	if len(str) > 0 {
 		return str
 	}
 
 	return msg
+}
+
+// requestCtx 取请求 ctx（错误消息翻译挂请求链路 span）；Request 缺失的
+// 构造态（测试）防御回退 Background。
+func (r *response) requestCtx() context.Context {
+	if r.ctx != nil && r.ctx.Request != nil {
+		return r.ctx.Request.Context()
+	}
+	return context.Background()
 }
 
 func (r *response) detectLanguage() language.Tag {
