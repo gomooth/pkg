@@ -8,7 +8,6 @@ Go 语言通用工具包，提供企业级应用开发的基础框架和工具�
 |------|------|
 | [framework](./framework/) | 基础框架层：应用生命周期、缓存、数据库访问、日志、指标、重试、分页、校验 |
 | [http](./http/) | HTTP 服务：JWT 认证、Gin 中间件、RESTful 响应、XSS 防护 |
-| [mq](./mq/) | 消息队列：Kafka 消费/生产、Redis 队列消费、通用队列接口 |
 | [job](./job/) | 定时任务：Cron 包装器、命令式任务（含自动重试） |
 | [storage](./storage/) | 文件存储：公开/私有/临时文件管理，路径安全防护 |
 
@@ -130,13 +129,8 @@ path, _ := d.Path()    // storage/exports/reports/data.csv
 | [restful](./http/restful/) | RESTful 标准响应 |
 | [xss](./http/xss/) | XSS 防护策略 |
 
-### mq — [README](./mq/README.md)
-
 | 子包 | 说明                                   |
 |------|--------------------------------------|
-| [kafka](./mq/kafka/) | Kafka 生产者（批量/顺序发送），消费者（同步/异步重试 + 死信） |
-| [redis](./mq/redis/) | Redis 队列生产者，消费者                    |
-| [httpsqs](./mq/httpsqs/) | HTTPSQS 消费者                        |
 
 ### job — [README](./job/README.md)
 
@@ -172,7 +166,6 @@ pkg/
 │   ├── middleware/     # Gin 中间件（CORS/JWT/限流/日志/缓存/XSS/Session）
 │   ├── restful/        # RESTful 标准响应
 │   └── xss/            # XSS 防护策略
-├── mq/                 # 消息队列
 │   ├── kafka/          # Kafka 生产者（批量/顺序），消费者（重试 + 死信）
 │   ├── redis/          # Redis 队列消费者
 │   └── httpsqs/        # HTTPSQS 消费者
@@ -196,3 +189,17 @@ pkg/
 ## License
 
 MIT
+
+## v0.5.0 迁移（mq 子树退役 → gomooth/mq 家族）
+
+mq 已拆至独立五仓（`github.com/gomooth/mq` + `mq-kafka`/`mq-redis`/`mq-httpsqs`/`mq-rabbit`）。import 对照：
+
+| 旧（pkg） | 新 |
+|---|---|
+| `github.com/gomooth/pkg/mq` | `github.com/gomooth/mq` |
+| `github.com/gomooth/pkg/mq/internal/*` | `github.com/gomooth/mq/*`（八内核包平铺公开化） |
+| `github.com/gomooth/pkg/mq/kafka` | `github.com/gomooth/mq-kafka` |
+| `github.com/gomooth/pkg/mq/redis` | `github.com/gomooth/mq-redis` |
+| `github.com/gomooth/pkg/mq/httpsqs` | `github.com/gomooth/mq-httpsqs` |
+
+接口契约零变化；驱动 `NewProducer` 统一 `ProducerConfig` 形态、新增 `EngineFrom`（`NewEngine(cfg)`）。
