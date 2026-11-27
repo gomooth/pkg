@@ -24,7 +24,7 @@ type commandJob struct {
 
 	ctx          context.Context     // 任务上下文，从 cron wrapper 传入
 	panicHandler PanicHandlerFunc    // panic 恢复处理器
-	failedSaver  func(jobName string, in []string, err error)
+	failedSaver  func(ctx context.Context, jobName string, in []string, err error)
 
 	log *slog.Logger
 }
@@ -107,7 +107,10 @@ func (j commandJob) Run() {
 			j.logf("error", "[job] %s run failed after %d attempts: %+v", j.jobName, cfg.MaxAttempts, lastErr)
 		}
 		if j.failedSaver != nil {
-			j.failedSaver(j.jobName, j.args, lastErr)
+			// WithoutCancel：超时/停机取消的轮次 ctx 剥离取消传播、保留链路
+			// 值（span 父子关系不丢）——失败落库等收尾动作在已取消 ctx 下必须
+			// 仍可执行（失败记录恰在超时/停机路径最需留痕）
+			j.failedSaver(context.WithoutCancel(ctx), j.jobName, j.args, lastErr)
 		}
 	} else {
 		span.SetStatus(codes.Ok, "")

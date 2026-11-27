@@ -15,7 +15,7 @@ type cronJobWrapper struct {
 	timeout  time.Duration // 整体重试循环超时，0 表示无超时
 
 	panicHandler PanicHandlerFunc                              // panic 恢复处理器
-	failedSaver  func(jobName string, in []string, err error) // 错误记录器
+	failedSaver  func(ctx context.Context, jobName string, in []string, err error) // 错误记录器（ctx 即轮次链路）
 
 	log *slog.Logger
 }

@@ -12,7 +12,42 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/gomooth/pkg/framework/telemetry"
 )
+
+// testProvider 挂 SpanRecorder 的最小 telemetry.Provider（Meter/Logger 与
+// noop 形态对齐），供用例断言 span 传播；Cleanup 经 SetProvider(nil) 复位。
+type testProvider struct {
+	tp *sdktrace.TracerProvider
+}
+
+func (p *testProvider) TracerProvider() trace.TracerProvider { return p.tp }
+func (p *testProvider) MeterProvider() metric.MeterProvider {
+	return metricnoop.NewMeterProvider()
+}
+func (p *testProvider) LoggerProvider() log.LoggerProvider { return nil }
+func (p *testProvider) Shutdown(context.Context) error     { return nil }
+
+// setupSpanRecorder 装配真 provider（SpanRecorder），返回 recorder；用例尾
+// 复位全局为 noop，避免污染同进程其他用例。
+func setupSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+
+	recorder := tracetest.NewSpanRecorder()
+	telemetry.SetProvider(&testProvider{
+		tp: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)),
+	})
+	t.Cleanup(func() { telemetry.SetProvider(nil) })
+
+	return recorder
+}
 
 // mockCommandJob 用于测试的 mock 任务
 type mockCommandJob struct {
@@ -109,9 +144,12 @@ func TestCommandJob_Run_ContextCancellation(t *testing.T) {
 }
 
 func TestCommandJob_Run_FailedSaverCalled(t *testing.T) {
+	recorder := setupSpanRecorder(t)
+
 	var saverCalled atomic.Int32
 	var savedJobName string
 	var savedErr error
+	var savedSpanValid bool
 
 	job := &commandJob{
 		jobName: "test-failed-saver",
@@ -121,10 +159,11 @@ func TestCommandJob_Run_FailedSaverCalled(t *testing.T) {
 			},
 		},
 		maxRetry: 1,
-		failedSaver: func(jobName string, in []string, err error) {
+		failedSaver: func(ctx context.Context, jobName string, in []string, err error) {
 			saverCalled.Add(1)
 			savedJobName = jobName
 			savedErr = err
+			savedSpanValid = trace.SpanContextFromContext(ctx).IsValid()
 		},
 	}
 
@@ -133,6 +172,8 @@ func TestCommandJob_Run_FailedSaverCalled(t *testing.T) {
 	assert.Equal(t, int32(1), saverCalled.Load(), "failedSaver 应被调用")
 	assert.Equal(t, "test-failed-saver", savedJobName)
 	assert.Error(t, savedErr)
+	assert.True(t, savedSpanValid, "failedSaver 收到的 ctx 应携带轮次 span")
+	assert.NotEmpty(t, recorder.Ended(), "轮次 span 应被记录")
 }
 
 func TestCommandJob_Run_FailedSaverNotCalledOnSuccess(t *testing.T) {
@@ -146,7 +187,7 @@ func TestCommandJob_Run_FailedSaverNotCalledOnSuccess(t *testing.T) {
 			},
 		},
 		maxRetry: 2,
-		failedSaver: func(jobName string, in []string, err error) {
+		failedSaver: func(ctx context.Context, jobName string, in []string, err error) {
 			saverCalled.Add(1)
 		},
 	}
@@ -229,7 +270,7 @@ func TestFromCommandJob_WithWrapperOptions(t *testing.T) {
 
 	wrapper := NewCronJobWrapper(
 		WrapWithMaxRetry(1),
-		WrapWithFailedSaver(func(jobName string, in []string, err error) {
+		WrapWithFailedSaver(func(ctx context.Context, jobName string, in []string, err error) {
 			saverCalled.Add(1)
 		}),
 	)
@@ -632,4 +673,34 @@ func TestCommandJob_Run_ContextCancelled(t *testing.T) {
 	job.Run()
 
 	assert.Contains(t, buf.String(), "cancelled", "应记录取消日志")
+}
+
+// TestCommandJob_Run_FailedSaverCtxSurvivesCancel 超时取消的轮次：failedSaver
+// 收到的 ctx 不应带取消——失败落库等收尾动作须照常可执行（WithoutCancel：
+// 保留链路值、剥离取消传播）。v0.4.0 回归：轮次 ctx 取消时传原 ctx，落库
+// 静默失败（失败记录恰在最需要留痕的超时/停机路径丢失）。
+func TestCommandJob_Run_FailedSaverCtxSurvivesCancel(t *testing.T) {
+	var gotCtxErr error
+	var gotJobName string
+
+	job := &commandJob{
+		jobName: "test-saver-cancel",
+		job: &mockCommandJob{
+			runFunc: func(ctx context.Context, args ...string) error {
+				<-ctx.Done() // 等待超时取消
+				return ctx.Err()
+			},
+		},
+		maxRetry: 0,
+		timeout:  10 * time.Millisecond,
+		failedSaver: func(ctx context.Context, jobName string, in []string, err error) {
+			gotCtxErr = ctx.Err()
+			gotJobName = jobName
+		},
+	}
+
+	job.Run()
+
+	assert.Equal(t, "test-saver-cancel", gotJobName, "failedSaver 应被调用（超时失败）")
+	assert.NoError(t, gotCtxErr, "failedSaver ctx 应剥离取消（WithoutCancel），落库才可执行")
 }

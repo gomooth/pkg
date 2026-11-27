@@ -1,6 +1,7 @@
 package job
 
 import (
+	"context"
 	"log/slog"
 	"time"
 )
@@ -10,7 +11,7 @@ type cronJobWrapperOption struct {
 	maxRetry     uint8
 	timeout      time.Duration
 	panicHandler PanicHandlerFunc
-	failedSaver  func(jobName string, in []string, err error)
+	failedSaver  func(ctx context.Context, jobName string, in []string, err error)
 	log          *slog.Logger
 }
 
@@ -31,8 +32,9 @@ func WrapWithMaxRetry(retry uint8) WrapperOption {
 	}
 }
 
-// WrapWithFailedSaver 设置任务失败后的保存回调函数
-func WrapWithFailedSaver(saver func(jobName string, in []string, err error)) WrapperOption {
+// WrapWithFailedSaver 设置任务失败后的保存回调函数；ctx 即该轮次链路
+// （含轮次 span），失败落库/日志经它挂进链路。v0.4.0 起 ctx 为首参。
+func WrapWithFailedSaver(saver func(ctx context.Context, jobName string, in []string, err error)) WrapperOption {
 	return func(o *cronJobWrapperOption) {
 		o.failedSaver = saver
 	}
