@@ -196,3 +196,17 @@ pkg/
 ## License
 
 MIT
+
+## v0.5.0 迁移（mq 子树退役 → gomooth/mq 家族）
+
+mq 已拆至独立五仓（`github.com/gomooth/mq` + `mq-kafka`/`mq-redis`/`mq-httpsqs`/`mq-rabbit`）。import 对照：
+
+| 旧（pkg） | 新 |
+|---|---|
+| `github.com/gomooth/pkg/mq` | `github.com/gomooth/mq` |
+| `github.com/gomooth/pkg/mq/internal/*` | `github.com/gomooth/mq/*`（八内核包平铺公开化） |
+| `github.com/gomooth/pkg/mq/kafka` | `github.com/gomooth/mq-kafka` |
+| `github.com/gomooth/pkg/mq/redis` | `github.com/gomooth/mq-redis` |
+| `github.com/gomooth/pkg/mq/httpsqs` | `github.com/gomooth/mq-httpsqs` |
+
+接口契约零变化；驱动 `NewProducer` 统一 `ProducerConfig` 形态、新增 `EngineFrom`（`NewEngine(cfg)`）。
